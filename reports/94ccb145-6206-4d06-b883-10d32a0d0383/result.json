@@ -1,0 +1,26 @@
+{
+  "scenarioId": "94ccb145-6206-4d06-b883-10d32a0d0383",
+  "scenarioName": "Test Google Navigation",
+  "platform": "web",
+  "status": "passed",
+  "duration": 5771,
+  "startedAt": 1772762727172,
+  "completedAt": 1772762732943,
+  "events": [
+    {
+      "eventIndex": 0,
+      "eventType": "navigate",
+      "status": "passed",
+      "duration": 2985,
+      "stepNo": 1
+    },
+    {
+      "eventIndex": 1,
+      "eventType": "wait",
+      "status": "passed",
+      "duration": 2001,
+      "stepNo": 2
+    }
+  ],
+  "variables": {}
+}
