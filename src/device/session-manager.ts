@@ -124,6 +124,36 @@ export class SessionManager {
           meta.status = 'offline';
         }
       }
+
+      // Auto-connect newly detected devices that aren't registered yet
+      for (const device of this.deviceCache) {
+        if (device.status === 'connected' && !this.connectedDeviceIds.has(device.id)) {
+          this.connectedDeviceIds.add(device.id);
+          this.connectedDeviceMeta.set(device.id, {
+            ...device,
+            connectedAt: new Date().toISOString(),
+          });
+          console.log(`[auto-connect] New device detected and registered: ${device.name} (${device.id})`);
+        }
+      }
+
+      // Clean up connected devices that are no longer detected at all
+      for (const id of this.connectedDeviceIds) {
+        const meta = this.connectedDeviceMeta.get(id);
+        if (meta && meta.status === 'offline') {
+          // Check if it's been missing for more than 2 scan cycles (20s)
+          // Only remove if no active session
+          const hasSession = this.getSessionByDeviceId(id);
+          if (!hasSession) {
+            const cached = this.deviceCache.find((d) => d.id === id);
+            if (!cached) {
+              this.connectedDeviceIds.delete(id);
+              this.connectedDeviceMeta.delete(id);
+              console.log(`[auto-connect] Device disconnected and removed: ${id}`);
+            }
+          }
+        }
+      }
     } catch {
       // Scan failures are non-fatal
     }
