@@ -10,8 +10,8 @@ import { DASHBOARD_HTML } from './dashboard.html';
  * Allows unauthenticated access to /health for load balancer checks.
  */
 function authMiddleware(req: Request, res: Response, next: NextFunction) {
-  // Health check is always public
-  if (req.path === '/health') return next();
+  // Public paths (no auth required)
+  if (req.path === '/' || req.path === '/health') return next();
 
   const expectedToken = config.cloud.runnerToken;
   if (!expectedToken) {
@@ -37,9 +37,10 @@ export function createLocalApi(workerManager: WorkerManager, cloudClient: CloudC
   app.use(express.json());
   app.use(authMiddleware);
 
-  // Dashboard UI
+  // Dashboard UI (token injected so browser JS can call authenticated APIs)
   app.get('/', (_req, res) => {
-    res.type('html').send(DASHBOARD_HTML);
+    const html = DASHBOARD_HTML.replace('__RUNNER_TOKEN__', config.cloud.runnerToken || '');
+    res.type('html').send(html);
   });
 
   // Runner status

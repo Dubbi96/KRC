@@ -262,6 +262,9 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
 </div>
 
 <script>
+const RUNNER_TOKEN = '__RUNNER_TOKEN__';
+const AUTH_HEADERS = RUNNER_TOKEN ? { 'Authorization': 'Bearer ' + RUNNER_TOKEN } : {};
+
 let currentPage = 'overview';
 let qPlatform = '', qStatus = 'waiting';
 let platforms = [];
@@ -288,13 +291,13 @@ function platformIcon(p) {
 }
 
 async function api(path) {
-  const r = await fetch(path);
+  const r = await fetch(path, {headers: AUTH_HEADERS});
   if (!r.ok) throw new Error(r.statusText);
   return r.json();
 }
-async function apiPost(path) { return (await fetch(path, {method:'POST'})).json(); }
-async function apiPostJson(path, body) { return (await fetch(path, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json(); }
-async function apiDel(path) { return (await fetch(path, {method:'DELETE'})).json(); }
+async function apiPost(path) { return (await fetch(path, {method:'POST', headers: AUTH_HEADERS})).json(); }
+async function apiPostJson(path, body) { return (await fetch(path, {method:'POST',headers:{...AUTH_HEADERS,'Content-Type':'application/json'},body:JSON.stringify(body)})).json(); }
+async function apiDel(path) { return (await fetch(path, {method:'DELETE', headers: AUTH_HEADERS})).json(); }
 
 // ========== OVERVIEW ==========
 async function refreshOverview() {
