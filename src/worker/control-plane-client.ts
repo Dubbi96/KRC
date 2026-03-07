@@ -36,7 +36,7 @@ export class ControlPlaneClient {
       const text = await res.text();
       throw new Error(`KCP API error ${res.status}: ${text}`);
     }
-    return res.json();
+    return res.json() as Promise<any>;
   }
 
   // === Node Registration ===
