@@ -28,11 +28,6 @@ export const config = {
     nodeToken: process.env.NODE_API_TOKEN || '',
     nodeName: process.env.NODE_NAME || os.hostname(),
   },
-  redis: {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT || '6379'),
-    password: process.env.REDIS_PASSWORD || undefined,
-  },
   runner: {
     tenantId: process.env.TENANT_ID || '',
     runnerId: process.env.RUNNER_ID || '',
@@ -48,5 +43,9 @@ export const config = {
     port: parseInt(process.env.LOCAL_API_PORT || '5001'),
     bind: process.env.LOCAL_API_BIND || '0.0.0.0',
   },
-  queuePrefix: process.env.QUEUE_PREFIX || 'katab',
+  mtls: {
+    caCert: process.env.MTLS_CA_CERT || '',
+    clientCert: process.env.MTLS_CLIENT_CERT || '',
+    clientKey: process.env.MTLS_CLIENT_KEY || '',
+  },
 };

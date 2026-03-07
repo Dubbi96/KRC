@@ -7,6 +7,9 @@
  */
 
 import { execFileSync, execSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 export type DevicePlatform = 'ios' | 'android';
 
@@ -18,6 +21,8 @@ export interface DetectedDevice {
   version: string;       // OS version
   status: 'connected' | 'unauthorized' | 'offline';
   isSimulator?: boolean; // true for iOS Simulator / Android Emulator
+  /** iOS transport: 'wired' (USB) | 'localNetwork' (Wi-Fi) | undefined */
+  transportType?: string;
 }
 
 /** Validate UDID/serial: only allow alphanumeric, dots, hyphens, underscores, colons */
@@ -44,7 +49,78 @@ export function scanDevices(): DetectedDevice[] {
 function scanIOSDevices(): DetectedDevice[] {
   const devices: DetectedDevice[] = [];
 
-  // Strategy 1: idevice_id (libimobiledevice) — uses execFileSync (no shell)
+  // Build set of UDIDs reachable via xctrace (online devices only)
+  const onlineUdids = new Set<string>();
+  try {
+    const xctOutput = execFileSync('xcrun', ['xctrace', 'list', 'devices'], {
+      encoding: 'utf-8',
+      timeout: 10000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    // Parse: "iPhone (26.3.1) (00008101-...)" — only lines before "== Devices Offline =="
+    let inOffline = false;
+    for (const line of xctOutput.split('\n')) {
+      if (line.includes('Devices Offline') || line.includes('Simulators')) { inOffline = true; continue; }
+      if (line.startsWith('== Devices ==')) { inOffline = false; continue; }
+      if (inOffline) continue;
+      const m = line.match(/\(([A-Fa-f0-9-]{20,})\)\s*$/);
+      if (m) onlineUdids.add(m[1]);
+    }
+  } catch {}
+
+  // Strategy 1: xcrun devicectl (CoreDevice — best for modern macOS/iOS 17+)
+  try {
+    const tmpFile = path.join(os.tmpdir(), `katab-devicectl-${process.pid}.json`);
+    execFileSync('xcrun', ['devicectl', 'list', 'devices', '--json-output', tmpFile], {
+      encoding: 'utf-8',
+      timeout: 10000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const raw = fs.readFileSync(tmpFile, 'utf-8');
+    fs.unlinkSync(tmpFile);
+    const data = JSON.parse(raw);
+
+    for (const d of data.result?.devices || []) {
+      const hw = d.hardwareProperties || {};
+      const dp = d.deviceProperties || {};
+      const cp = d.connectionProperties || {};
+
+      // Skip non-iOS (watchOS, tvOS, etc.) and virtual devices
+      if (hw.platform !== 'iOS') continue;
+      if (hw.reality !== 'physical') continue;
+
+      // Use hardware UDID (the one Appium/xctrace uses)
+      const udid = hw.udid || d.identifier;
+      if (!udid || !isValidDeviceId(udid)) continue;
+
+      // Cross-check: device must be in xctrace online list to be usable.
+      // Wi-Fi-only paired devices (not in xctrace) are not usable for Appium.
+      const isOnline = onlineUdids.has(udid);
+      if (!isOnline) continue;
+
+      // Check transport type — Wi-Fi-only devices can't be used by Appium
+      // without an active CoreDevice tunnel.
+      const transport = cp.transportType as string | undefined; // 'wired' | 'localNetwork'
+      const tunnelState = cp.tunnelState as string | undefined; // 'connected' | 'disconnected'
+      if (transport === 'localNetwork' && tunnelState !== 'connected') {
+        console.log(`[scanner] Skipping Wi-Fi-only device ${dp.name || udid} — USB cable required for Appium. (transport=${transport}, tunnel=${tunnelState})`);
+        continue;
+      }
+
+      devices.push({
+        id: udid,
+        platform: 'ios',
+        name: dp.name || hw.marketingName || 'iOS Device',
+        model: hw.marketingName || hw.productType || 'Unknown',
+        version: dp.osVersionNumber || 'Unknown',
+        status: 'connected',
+        transportType: transport,
+      });
+    }
+    if (devices.length > 0) return devices;
+  } catch {}
+
+  // Strategy 2: idevice_id (libimobiledevice) — fallback for older macOS
   try {
     const output = execFileSync('idevice_id', ['-l'], {
       encoding: 'utf-8',
@@ -53,7 +129,7 @@ function scanIOSDevices(): DetectedDevice[] {
     }).trim();
     if (output) {
       for (const udid of output.split('\n').filter(Boolean)) {
-        if (!isValidDeviceId(udid)) continue; // skip invalid device IDs
+        if (!isValidDeviceId(udid)) continue;
         const info = getIOSDeviceInfo(udid);
         devices.push({
           id: udid,
@@ -68,7 +144,7 @@ function scanIOSDevices(): DetectedDevice[] {
     if (devices.length > 0) return devices;
   } catch {}
 
-  // Strategy 2: system_profiler (macOS fallback) — no user input in command
+  // Strategy 3: system_profiler (macOS USB fallback)
   try {
     const output = execSync(
       'system_profiler SPUSBDataType 2>/dev/null | grep -A 10 "iPhone\\|iPad\\|iPod"',

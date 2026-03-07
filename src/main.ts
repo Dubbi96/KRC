@@ -78,19 +78,20 @@ async function main() {
   const sessionManager = new SessionManager();
   console.log(`Detected devices: ${sessionManager.getDetectedDevices().length}`);
 
-  // Initialize BullMQ workers + ProcessManager
+  // Initialize WorkerManager (KCP pull mode — no BullMQ/Redis)
   const workerManager = new WorkerManager(cloudClient);
 
   // 1) Start Appium servers immediately (always on for mobile platforms)
   await workerManager.processManager.startAppiumServers();
 
-  // 2) Inject ProcessManager into SessionManager for tunnel access
+  // 2) Inject ProcessManager into SessionManager for tunnel/port access
   sessionManager.setProcessManager(workerManager.processManager);
 
-  // 3) Auto-connect all detected physical devices (so Cloud sees them immediately)
-  await sessionManager.autoConnectDetectedDevices();
+  // 3) Devices are shown in KRC Dashboard — operator manually clicks "Connect"
+  //    to register them. Only connected devices are reported to Cloud via heartbeat.
+  console.log(`  → ${sessionManager.getDetectedDevices().length} device(s) available for connection in Dashboard.`);
 
-  // 4) Start BullMQ workers
+  // 4) Initialize platform workers (no BullMQ — jobs pulled from KCP)
   await workerManager.start();
 
   // 5) Build Express app
@@ -106,9 +107,17 @@ async function main() {
   attachWebSocketStreaming(server, sessionManager);
 
   const bindAddr = config.localApi.bind;
-  server.listen(config.localApi.port, bindAddr, () => {
-    console.log(`Local API running on ${bindAddr}:${config.localApi.port}`);
-    console.log(`Dashboard: http://localhost:${config.localApi.port}`);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', (err: any) => {
+      console.error(`FATAL: Cannot bind to ${bindAddr}:${config.localApi.port} — ${err.message}`);
+      console.error('Another KRC instance may already be running. Exiting.');
+      process.exit(1);
+    });
+    server.listen(config.localApi.port, bindAddr, () => {
+      console.log(`Local API running on ${bindAddr}:${config.localApi.port}`);
+      console.log(`Dashboard: http://localhost:${config.localApi.port}`);
+      resolve();
+    });
   });
 
   // --- Heartbeat builder (reports system resources + devices + slots + health) ---

@@ -131,45 +131,10 @@ export function createLocalApi(workerManager: WorkerManager, cloudClient: CloudC
     }
   });
 
-  // === Queue management ===
+  // === Worker stats (jobs managed by KCP) ===
 
-  app.get('/queue/:platform/stats', async (req, res) => {
-    try {
-      const detailed = await workerManager.getDetailedStats();
-      res.json(detailed[req.params.platform] || {});
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.get('/queue/:platform/jobs', async (req, res) => {
-    try {
-      const status = (req.query.status as string) || 'waiting';
-      const start = parseInt(req.query.start as string) || 0;
-      const end = parseInt(req.query.end as string) || 19;
-      const jobs = await workerManager.getJobs(req.params.platform, status as any, start, end);
-      res.json(jobs);
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post('/queue/:platform/jobs/:jobId/retry', async (req, res) => {
-    try {
-      const result = await workerManager.retryJob(req.params.platform, req.params.jobId);
-      res.json(result || { error: 'Job not found' });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.delete('/queue/:platform/jobs/:jobId', async (req, res) => {
-    try {
-      const result = await workerManager.removeJob(req.params.platform, req.params.jobId);
-      res.json(result || { error: 'Job not found' });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
+  app.get('/worker/stats', (_req, res) => {
+    res.json(workerManager.getStats());
   });
 
   // Activity logs

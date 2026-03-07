@@ -727,7 +727,7 @@ async function refreshDevices() {
 
     // Connected Devices
     if (!devs || devs.length === 0) {
-      document.getElementById('devices-list').innerHTML = '<div class="empty">No physical devices connected. Attach iOS/Android via USB.</div>';
+      document.getElementById('devices-list').innerHTML = '<div class="empty">No devices detected. Attach iOS/Android via USB, or boot a Simulator/Emulator.</div>';
     } else {
       let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px">';
       devs.forEach(d => {

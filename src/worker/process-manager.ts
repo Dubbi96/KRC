@@ -4,7 +4,7 @@
  * Lifecycle:
  *   1. Runner boots → Appium server starts immediately (always on)
  *   2. Device "connect" → iOS tunnel started on-demand
- *   3. BullMQ workers start independently
+ *   3. Job workers pull from KCP (no BullMQ/Redis)
  *
  * This manager handles lifecycle, health-checks, and status reporting
  * for all sub-processes so the dashboard can display them in real-time.

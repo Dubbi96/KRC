@@ -1,19 +1,42 @@
 import os from 'os';
 import fs from 'fs';
+import https from 'https';
+import http from 'http';
 import { config } from '../config';
 
 /**
  * HTTP client for communicating with KCP (Katab Control Plane).
  * Handles node registration, heartbeat with system resources, and job claim.
+ *
+ * Supports optional mTLS: when MTLS_CA_CERT + MTLS_CLIENT_CERT + MTLS_CLIENT_KEY
+ * are set, all requests use mutual TLS for strong node authentication.
  */
 export class ControlPlaneClient {
   private baseUrl: string;
   private nodeToken: string;
   private _draining = false;
+  private httpsAgent: https.Agent | null = null;
 
   constructor(baseUrl: string, nodeToken: string) {
     this.baseUrl = baseUrl;
     this.nodeToken = nodeToken;
+
+    // Initialize mTLS agent if certificates are configured
+    const { caCert, clientCert, clientKey } = config.mtls;
+    if (caCert && clientCert && clientKey) {
+      try {
+        this.httpsAgent = new https.Agent({
+          ca: fs.readFileSync(caCert),
+          cert: fs.readFileSync(clientCert),
+          key: fs.readFileSync(clientKey),
+          rejectUnauthorized: true,
+        });
+        console.log('[KRC] mTLS enabled for KCP communication');
+      } catch (err: any) {
+        console.warn(`[KRC] mTLS certificate loading failed: ${err.message}`);
+        console.warn('[KRC] Falling back to token-based auth');
+      }
+    }
   }
 
   get isDraining() { return this._draining; }
@@ -31,6 +54,12 @@ export class ControlPlaneClient {
       headers['X-Node-Token'] = this.nodeToken;
     }
 
+    // Use mTLS-capable request when agent is configured and URL is HTTPS
+    if (this.httpsAgent && url.startsWith('https://')) {
+      return this.requestWithAgent(method, url, headers, body);
+    }
+
+    // Standard fetch (token-based auth)
     const res = await fetch(url, {
       method,
       headers,
@@ -41,6 +70,53 @@ export class ControlPlaneClient {
       throw new Error(`KCP API error ${res.status}: ${text}`);
     }
     return res.json() as Promise<any>;
+  }
+
+  /**
+   * HTTPS request with mTLS client certificate.
+   * Uses Node.js https module since built-in fetch doesn't support custom agents.
+   */
+  private requestWithAgent(method: string, url: string, headers: Record<string, string>, body?: any): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const parsedUrl = new URL(url);
+      const payload = body ? JSON.stringify(body) : undefined;
+
+      if (payload) {
+        headers['Content-Length'] = Buffer.byteLength(payload).toString();
+      }
+
+      const transport = parsedUrl.protocol === 'https:' ? https : http;
+      const req = transport.request({
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port,
+        path: parsedUrl.pathname + parsedUrl.search,
+        method,
+        headers,
+        agent: this.httpsAgent || undefined,
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new Error(`KCP API error ${res.statusCode}: ${data}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(data));
+          } catch {
+            resolve(data);
+          }
+        });
+      });
+
+      req.on('error', reject);
+      req.setTimeout(30000, () => {
+        req.destroy(new Error('Request timeout'));
+      });
+
+      if (payload) req.write(payload);
+      req.end();
+    });
   }
 
   // === Node Registration ===

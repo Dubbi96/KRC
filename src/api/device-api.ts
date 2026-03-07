@@ -26,6 +26,7 @@
 import { Router } from 'express';
 import { SessionManager } from '../device/session-manager';
 import { captureDeviceThumbnail } from '../device/device-thumbnail';
+import { WebRTCSession } from '../device/webrtc-session';
 
 export function createDeviceRouter(sessionManager: SessionManager): Router {
   const router = Router();
@@ -240,6 +241,14 @@ export function createDeviceRouter(sessionManager: SessionManager): Router {
 /**
  * Attach WebSocket upgrade handler for session streaming.
  * Call this with the HTTP server instance.
+ *
+ * Supports two transport modes:
+ *   1. WebSocket relay (legacy) — frames sent as JSON { type: 'frame', data: '<base64>' }
+ *   2. WebRTC DataChannel (P2P) — frames sent directly via RTCDataChannel
+ *      WebSocket is used only for signaling (SDP offer/answer, ICE candidates)
+ *
+ * The client negotiates WebRTC by sending { type: 'webrtc_request' }.
+ * If WebRTC is unavailable (wrtc not installed), falls back to WebSocket.
  */
 export function attachWebSocketStreaming(server: any, sessionManager: SessionManager) {
   let WebSocket: any;
@@ -251,6 +260,9 @@ export function attachWebSocketStreaming(server: any, sessionManager: SessionMan
   }
 
   const wss = new WebSocket.Server({ noServer: true });
+
+  /** Parse ICE server config from environment */
+  const customIceServers = parseIceServersFromEnv();
 
   server.on('upgrade', (request: any, socket: any, head: any) => {
     const url = new URL(request.url, `http://${request.headers.host}`);
@@ -270,11 +282,42 @@ export function attachWebSocketStreaming(server: any, sessionManager: SessionMan
     wss.handleUpgrade(request, socket, head, (ws: any) => {
       console.log(`[ws] Client connected to session ${sessionId}`);
 
+      // Track WebRTC session for this client
+      let webrtcSession: WebRTCSession | null = null;
+      /** Whether frames are being sent via WebRTC DataChannel */
+      let webrtcActive = false;
+
       // Send session info immediately
       ws.send(JSON.stringify({ type: 'info', data: session.getInfo() }));
 
-      // Forward frames
+      // Notify client whether WebRTC is available
+      ws.send(JSON.stringify({
+        type: 'webrtc_available',
+        data: {
+          available: WebRTCSession.isAvailable(),
+          iceServers: customIceServers.length > 0
+            ? customIceServers
+            : [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+              ],
+        },
+      }));
+
+      // Forward frames (only via WebSocket if WebRTC is not active)
       const onFrame = (base64: string) => {
+        // If WebRTC DataChannel is active, send via DataChannel
+        if (webrtcActive && webrtcSession) {
+          // Apply backpressure: skip frame if buffer is getting full (>256KB)
+          if (webrtcSession.getBufferedAmount() > 256 * 1024) {
+            return; // Drop frame — client will get the next one
+          }
+          const sent = webrtcSession.sendFrame(base64);
+          if (sent) return; // Frame sent via WebRTC, skip WebSocket
+          // DataChannel send failed — fall through to WebSocket
+        }
+
+        // Fallback: send via WebSocket
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ type: 'frame', data: base64 }));
         }
@@ -304,24 +347,158 @@ export function attachWebSocketStreaming(server: any, sessionManager: SessionMan
       };
       session.on('pages', onPages);
 
-      // Receive actions from client
+      // Receive messages from client
       ws.on('message', async (data: any) => {
         try {
           const msg = JSON.parse(data.toString());
-          if (msg.type === 'action') {
-            await session.handleAction(msg.data);
-          } else if (msg.type === 'record_start') {
-            session.startRecording();
-          } else if (msg.type === 'record_stop') {
-            const events = session.stopRecording();
-            ws.send(JSON.stringify({ type: 'recorded_events', data: events }));
-          } else if (msg.type === 'switch_page') {
-            if (typeof (session as any).switchPage === 'function') {
-              (session as any).switchPage(msg.data?.pageId);
+
+          switch (msg.type) {
+            // ── Legacy actions ──────────────────────────────
+            case 'action':
+              await session.handleAction(msg.data);
+              break;
+
+            case 'record_start':
+              session.startRecording();
+              break;
+
+            case 'record_stop': {
+              const events = session.stopRecording();
+              ws.send(JSON.stringify({ type: 'recorded_events', data: events }));
+              break;
             }
+
+            case 'switch_page':
+              if (typeof (session as any).switchPage === 'function') {
+                (session as any).switchPage(msg.data?.pageId);
+              }
+              break;
+
+            // ── WebRTC signaling ────────────────────────────
+            case 'webrtc_request': {
+              // Client requests WebRTC upgrade
+              if (!WebRTCSession.isAvailable()) {
+                ws.send(JSON.stringify({
+                  type: 'webrtc_error',
+                  data: 'WebRTC not available on this runner (wrtc package not installed)',
+                }));
+                break;
+              }
+
+              try {
+                // Clean up any existing WebRTC session
+                if (webrtcSession) {
+                  webrtcSession.close();
+                }
+
+                webrtcSession = new WebRTCSession(sessionId, {
+                  iceServers: customIceServers.length > 0 ? customIceServers : undefined,
+                });
+
+                // Forward ICE candidates to client via WebSocket signaling
+                webrtcSession.on('ice_candidate', (candidate: any) => {
+                  if (ws.readyState === 1) {
+                    ws.send(JSON.stringify({ type: 'ice_candidate', data: candidate }));
+                  }
+                });
+
+                // Track DataChannel state for frame routing
+                webrtcSession.on('datachannel_open', () => {
+                  webrtcActive = true;
+                  console.log(`[ws] WebRTC DataChannel active for session ${sessionId} — frames will use P2P`);
+                  if (ws.readyState === 1) {
+                    ws.send(JSON.stringify({ type: 'webrtc_active', data: true }));
+                  }
+                });
+
+                webrtcSession.on('datachannel_close', () => {
+                  webrtcActive = false;
+                  console.log(`[ws] WebRTC DataChannel closed for session ${sessionId} — falling back to WebSocket`);
+                  if (ws.readyState === 1) {
+                    ws.send(JSON.stringify({ type: 'webrtc_active', data: false }));
+                  }
+                });
+
+                // Handle control messages from browser via DataChannel
+                webrtcSession.on('control_message', async (controlMsg: any) => {
+                  try {
+                    if (controlMsg.type === 'action') {
+                      await session.handleAction(controlMsg.data);
+                    } else if (controlMsg.type === 'record_start') {
+                      session.startRecording();
+                    } else if (controlMsg.type === 'record_stop') {
+                      const events = session.stopRecording();
+                      // Send recorded events back via WebSocket (too large for DataChannel)
+                      if (ws.readyState === 1) {
+                        ws.send(JSON.stringify({ type: 'recorded_events', data: events }));
+                      }
+                    }
+                  } catch (err: any) {
+                    if (ws.readyState === 1) {
+                      ws.send(JSON.stringify({ type: 'error', data: err.message }));
+                    }
+                  }
+                });
+
+                webrtcSession.on('state', (state: string) => {
+                  if (ws.readyState === 1) {
+                    ws.send(JSON.stringify({ type: 'webrtc_state', data: state }));
+                  }
+                });
+
+                // Create offer and send to client
+                const offer = await webrtcSession.createOffer();
+                ws.send(JSON.stringify({ type: 'sdp_offer', data: offer }));
+
+              } catch (err: any) {
+                console.error(`[ws] WebRTC offer creation failed: ${err.message}`);
+                ws.send(JSON.stringify({
+                  type: 'webrtc_error',
+                  data: `Failed to create WebRTC offer: ${err.message}`,
+                }));
+              }
+              break;
+            }
+
+            case 'sdp_answer': {
+              // Client sends SDP answer
+              if (!webrtcSession) {
+                ws.send(JSON.stringify({
+                  type: 'webrtc_error',
+                  data: 'No WebRTC session active. Send webrtc_request first.',
+                }));
+                break;
+              }
+              try {
+                await webrtcSession.handleAnswer(msg.data);
+              } catch (err: any) {
+                ws.send(JSON.stringify({
+                  type: 'webrtc_error',
+                  data: `Failed to handle SDP answer: ${err.message}`,
+                }));
+              }
+              break;
+            }
+
+            case 'ice_candidate': {
+              // Client sends ICE candidate
+              if (!webrtcSession) break;
+              try {
+                await webrtcSession.addIceCandidate(msg.data);
+              } catch (err: any) {
+                console.warn(`[ws] Failed to add ICE candidate: ${err.message}`);
+              }
+              break;
+            }
+
+            default:
+              // Unknown message type — ignore
+              break;
           }
         } catch (err: any) {
-          ws.send(JSON.stringify({ type: 'error', data: err.message }));
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'error', data: err.message }));
+          }
         }
       });
 
@@ -331,9 +508,57 @@ export function attachWebSocketStreaming(server: any, sessionManager: SessionMan
         session.off('status', onStatus);
         session.off('error', onError);
         session.off('pages', onPages);
+
+        // Clean up WebRTC session
+        if (webrtcSession) {
+          webrtcSession.close();
+          webrtcSession = null;
+          webrtcActive = false;
+        }
       });
     });
   });
 
   console.log('[device-api] WebSocket streaming enabled');
+  if (WebRTCSession.isAvailable()) {
+    console.log('[device-api] WebRTC DataChannel transport available');
+  } else {
+    console.log('[device-api] WebRTC not available (wrtc package not installed) — WebSocket-only mode');
+  }
+}
+
+/**
+ * Parse ICE server configuration from environment variables.
+ *
+ * Supports:
+ *   WEBRTC_ICE_SERVERS — JSON array of ICE server objects
+ *   TURN_SERVER_URL    — single TURN server URL
+ *   TURN_USERNAME      — TURN username
+ *   TURN_CREDENTIAL    — TURN credential
+ */
+function parseIceServersFromEnv(): { urls: string | string[]; username?: string; credential?: string }[] {
+  const servers: { urls: string | string[]; username?: string; credential?: string }[] = [];
+
+  // JSON array from env
+  if (process.env.WEBRTC_ICE_SERVERS) {
+    try {
+      const parsed = JSON.parse(process.env.WEBRTC_ICE_SERVERS);
+      if (Array.isArray(parsed)) {
+        servers.push(...parsed);
+      }
+    } catch (err: any) {
+      console.warn(`[webrtc] Failed to parse WEBRTC_ICE_SERVERS: ${err.message}`);
+    }
+  }
+
+  // Single TURN server from env
+  if (process.env.TURN_SERVER_URL) {
+    servers.push({
+      urls: process.env.TURN_SERVER_URL,
+      username: process.env.TURN_USERNAME,
+      credential: process.env.TURN_CREDENTIAL,
+    });
+  }
+
+  return servers;
 }

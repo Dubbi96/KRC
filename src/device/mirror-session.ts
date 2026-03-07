@@ -31,6 +31,8 @@ export interface MirrorSessionOptions {
   url?: string;                 // Web URL
   fps?: number;                 // screenshot polling FPS (default 2)
   maxWidth?: number;            // downscale for bandwidth (default 720)
+  /** Reuse an existing Appium session (WDA already running) */
+  existingAppiumSessionId?: string;
 }
 
 export interface UserAction {
@@ -80,6 +82,8 @@ export class MirrorSession extends EventEmitter {
   private pendingEnrich: Promise<void> | null = null;
   private lastPageSourceSnapshot: string | null = null;
   private snapshotBeforeTap: string | null = null;
+  /** If true, Appium session is shared (created at connect time) — don't delete on close */
+  private sharedAppiumSession = false;
 
   constructor(id: string, options: MirrorSessionOptions) {
     super();
@@ -101,7 +105,20 @@ export class MirrorSession extends EventEmitter {
     this.emit('status', this.status);
 
     try {
-      if (this.platform === 'ios') {
+      // Reuse existing Appium session if provided (WDA already running from connect)
+      if (this.options.existingAppiumSessionId) {
+        console.log(`[${this.platform}] Reusing existing Appium session: ${this.options.existingAppiumSessionId}`);
+        this.appiumSessionId = this.options.existingAppiumSessionId;
+        this.sharedAppiumSession = true;
+        await this.fetchScreenSize();
+
+        // Activate specific app if bundleId/appPackage provided
+        if (this.platform === 'ios' && this.options.bundleId) {
+          await this.activateApp(this.options.bundleId);
+        } else if (this.platform === 'android' && this.options.appPackage) {
+          await this.activateApp(this.options.appPackage);
+        }
+      } else if (this.platform === 'ios') {
         await this.startIOSSession();
       } else if (this.platform === 'android') {
         await this.startAndroidSession();
@@ -125,6 +142,20 @@ export class MirrorSession extends EventEmitter {
     }
   }
 
+  /** Activate an app on an existing Appium session (mobile: activateApp) */
+  private async activateApp(appId: string): Promise<void> {
+    if (!this.appiumSessionId) return;
+    try {
+      const script = this.platform === 'ios' ? 'mobile: activateApp' : 'mobile: activateApp';
+      await this.appiumAction(`${this.appiumUrl}/session/${this.appiumSessionId}`, 'execute/sync', {
+        script, args: [{ bundleId: appId }],
+      });
+      console.log(`[${this.platform}] Activated app: ${appId}`);
+    } catch (err: any) {
+      console.warn(`[${this.platform}] Failed to activate app ${appId}: ${err.message}`);
+    }
+  }
+
   private async startIOSSession(): Promise<void> {
     console.log(`[iOS] Creating Appium session for device ${this.deviceId}...`);
     console.log(`[iOS] Appium URL: ${this.appiumUrl}`);
@@ -137,7 +168,10 @@ export class MirrorSession extends EventEmitter {
       console.warn(`[iOS] No Team ID found. Set XCODE_ORG_ID env var or install a signing identity.`);
     }
 
-    const derivedDataPath = process.env.DERIVED_DATA_PATH || '/tmp/katab-wda-direct';
+    // Use port pool for per-device unique ports (supports parallel sessions)
+    const { portPool: pp } = require('../worker/port-pool');
+    const ports = pp.get(this.deviceId) || pp.allocate(this.deviceId);
+    const derivedDataPath = ports.derivedDataPath;
 
     const baseCaps: Record<string, any> = {
       platformName: 'iOS',
@@ -148,20 +182,15 @@ export class MirrorSession extends EventEmitter {
       'appium:newCommandTimeout': 600,
       'appium:useNewWDA': false,
       'appium:useSimpleBuildTest': true,
-      // WDA startup timeouts (real devices need more time)
       'appium:wdaLaunchTimeout': 120000,
       'appium:wdaConnectionTimeout': 120000,
       'appium:wdaStartupRetries': 4,
       'appium:wdaStartupRetryInterval': 15000,
-      // WDA local port — use fixed 8100 to avoid port conflicts
-      'appium:wdaLocalPort': 8100,
-      // Performance & stability
+      'appium:wdaLocalPort': ports.wdaLocalPort,
       'appium:waitForQuiescence': false,
       'appium:skipLogCapture': true,
       'appium:shouldUseSingletonTestManager': false,
-      // Derived data path for WDA builds
       'appium:derivedDataPath': derivedDataPath,
-      // Allow Xcode to auto-generate provisioning profiles
       'appium:allowProvisioningUpdates': true,
     };
 
@@ -270,12 +299,19 @@ export class MirrorSession extends EventEmitter {
   }
 
   private async startAndroidSession(): Promise<void> {
+    // Use port pool for per-device unique ports
+    const { portPool: pp } = require('../worker/port-pool');
+    const ports = pp.get(this.deviceId) || pp.allocate(this.deviceId);
+
     const capabilities: Record<string, any> = {
       platformName: 'Android',
       'appium:automationName': 'UiAutomator2',
       'appium:deviceName': this.deviceId,
       'appium:noReset': true,
       'appium:newCommandTimeout': 600,
+      'appium:systemPort': ports.systemPort,
+      'appium:mjpegServerPort': ports.mjpegServerPort,
+      'appium:chromedriverPort': ports.chromedriverPort,
     };
     if (this.options.appPackage) {
       capabilities['appium:appPackage'] = this.options.appPackage;
@@ -693,12 +729,17 @@ export class MirrorSession extends EventEmitter {
     }
 
     if (this.appiumSessionId) {
-      try {
-        await fetch(`${this.appiumUrl}/session/${this.appiumSessionId}`, {
-          method: 'DELETE',
-          signal: AbortSignal.timeout(5000),
-        });
-      } catch {}
+      if (this.sharedAppiumSession) {
+        // Shared session (created at connect time) — don't delete, just detach
+        console.log(`[${this.platform}] Detaching from shared Appium session ${this.appiumSessionId}`);
+      } else {
+        try {
+          await fetch(`${this.appiumUrl}/session/${this.appiumSessionId}`, {
+            method: 'DELETE',
+            signal: AbortSignal.timeout(5000),
+          });
+        } catch {}
+      }
       this.appiumSessionId = null;
     }
 
