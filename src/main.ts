@@ -10,6 +10,17 @@ import os from 'os';
 import fs from 'fs';
 import path from 'path';
 
+// Heartbeat file logger — keeps heartbeat noise out of main console
+const heartbeatLogPath = path.join(process.cwd(), 'logs', 'heartbeat.log');
+let heartbeatLogStream: fs.WriteStream | null = null;
+function heartbeatLog(msg: string) {
+  if (!heartbeatLogStream) {
+    fs.mkdirSync(path.dirname(heartbeatLogPath), { recursive: true });
+    heartbeatLogStream = fs.createWriteStream(heartbeatLogPath, { flags: 'a' });
+  }
+  heartbeatLogStream.write(`[${new Date().toISOString()}] ${msg}\n`);
+}
+
 function getLocalIp(): string {
   const envHost = process.env.RUNNER_ADVERTISE_HOST;
   if (envHost) return envHost;
@@ -143,15 +154,17 @@ async function main() {
     // KCP heartbeat (enhanced with system resources, receives directives)
     try {
       await cpClient.sendHeartbeat(payload);
+      heartbeatLog('KCP heartbeat OK');
     } catch (e: any) {
-      // KCP may not be running yet, that's ok
+      heartbeatLog(`KCP heartbeat failed: ${e.message}`);
     }
 
     // KCD heartbeat (backward compatible)
     try {
       await cloudClient.sendHeartbeat('online', payload);
+      heartbeatLog('KCD heartbeat OK');
     } catch (e: any) {
-      console.error('Cloud heartbeat failed:', e.message);
+      heartbeatLog(`KCD heartbeat failed: ${e.message}`);
     }
   };
 
