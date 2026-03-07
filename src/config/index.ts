@@ -1,6 +1,7 @@
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 
 // dotenv does NOT override existing env vars — process.env from parent takes priority
 dotenv.config();
@@ -22,6 +23,11 @@ export const config = {
     apiUrl: process.env.CLOUD_API_URL || 'http://localhost:4000/api/v1',
     runnerToken: process.env.RUNNER_API_TOKEN || '',
   },
+  controlPlane: {
+    apiUrl: process.env.CONTROL_PLANE_URL || 'http://localhost:4100/api',
+    nodeToken: process.env.NODE_API_TOKEN || '',
+    nodeName: process.env.NODE_NAME || os.hostname(),
+  },
   redis: {
     host: process.env.REDIS_HOST || 'localhost',
     port: parseInt(process.env.REDIS_PORT || '6379'),
@@ -40,7 +46,7 @@ export const config = {
   },
   localApi: {
     port: parseInt(process.env.LOCAL_API_PORT || '5001'),
-    bind: process.env.LOCAL_API_BIND || '127.0.0.1',
+    bind: process.env.LOCAL_API_BIND || '0.0.0.0',
   },
   queuePrefix: process.env.QUEUE_PREFIX || 'katab',
 };

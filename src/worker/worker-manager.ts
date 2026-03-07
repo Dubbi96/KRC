@@ -216,6 +216,86 @@ export class WorkerManager {
     console.log(`Scenario synced to ${filePath}`);
   }
 
+  /**
+   * Execute a job claimed from KCP (Control Plane).
+   * Uses the same scenario executor infrastructure as BullMQ jobs.
+   */
+  async executeJob(job: {
+    id: string;
+    scenarioId?: string;
+    platform: string;
+    payload: Record<string, any>;
+    scenarioRunId?: string;
+    runId?: string;
+  }): Promise<{ status: string; durationMs?: number; error?: string }> {
+    const platform = job.platform as 'web' | 'ios' | 'android';
+    const scenarioId = job.scenarioId || job.payload.scenarioId;
+    const scenarioRunId = job.scenarioRunId || job.payload.scenarioRunId;
+
+    const stat = this.stats.get(platform);
+    if (stat) stat.activeJobs++;
+    this.addLog(platform, job.id, 'kcp_job_started');
+
+    const startTime = Date.now();
+    try {
+      // Report started to KCD as well if scenarioRunId exists
+      if (scenarioRunId) {
+        await this.cloudClient.reportStarted(scenarioRunId).catch(() => {});
+      }
+
+      // Download and execute scenario
+      if (scenarioId) {
+        await this.syncScenario(scenarioId);
+      }
+
+      const result = await this.executor.execute({
+        scenarioId: scenarioId || job.id,
+        platform,
+        options: job.payload.options || {},
+        scenarioDir: config.paths.scenarioDir,
+        reportDir: config.paths.reportDir,
+      });
+
+      const durationMs = Date.now() - startTime;
+
+      // Report to KCD as well
+      if (scenarioRunId) {
+        await this.cloudClient.reportCompleted(scenarioRunId, {
+          status: result.passed ? 'passed' : 'failed',
+          durationMs,
+          error: result.error,
+          resultJson: result.details,
+        }).catch(() => {});
+      }
+
+      if (stat) {
+        stat.activeJobs = Math.max(0, stat.activeJobs - 1);
+        stat.completedJobs++;
+      }
+      this.addLog(platform, job.id, 'kcp_job_completed');
+
+      return { status: result.passed ? 'passed' : 'failed', durationMs };
+    } catch (error: any) {
+      const durationMs = Date.now() - startTime;
+
+      if (scenarioRunId) {
+        await this.cloudClient.reportCompleted(scenarioRunId, {
+          status: 'infra_failed',
+          durationMs,
+          error: error.message,
+        }).catch(() => {});
+      }
+
+      if (stat) {
+        stat.activeJobs = Math.max(0, stat.activeJobs - 1);
+        stat.failedJobs++;
+      }
+      this.addLog(platform, job.id, 'kcp_job_failed', error.message);
+
+      return { status: 'infra_failed', durationMs, error: error.message };
+    }
+  }
+
   async stop() {
     for (const worker of this.workers) {
       await worker.close();

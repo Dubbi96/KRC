@@ -2,6 +2,7 @@ import { config } from './config';
 import { WorkerManager } from './worker/worker-manager';
 import { createLocalApi } from './api/local-api';
 import { CloudClient } from './worker/cloud-client';
+import { ControlPlaneClient } from './worker/control-plane-client';
 import { SessionManager } from './device/session-manager';
 import { createDeviceRouter, attachWebSocketStreaming } from './api/device-api';
 import http from 'http';
@@ -23,18 +24,41 @@ function getLocalIp(): string {
 }
 
 async function main() {
-  console.log('=== Katab Local Runner ===');
-  console.log(`Tenant: ${config.runner.tenantId}`);
-  console.log(`Runner: ${config.runner.runnerId}`);
+  console.log('=== Katab Node Agent (KRC) ===');
+  console.log(`Node Name: ${config.controlPlane.nodeName}`);
   console.log(`Platforms: ${config.runner.platforms.join(', ')}`);
+  console.log(`Control Plane: ${config.controlPlane.apiUrl}`);
   console.log(`Cloud API: ${config.cloud.apiUrl}`);
 
-  if (!config.runner.tenantId || !config.cloud.runnerToken) {
-    console.error('ERROR: TENANT_ID and RUNNER_API_TOKEN are required.');
-    console.error('Register a runner in the cloud dashboard first.');
-    process.exit(1);
+  // --- Control Plane Client (KCP) ---
+  const cpClient = new ControlPlaneClient(
+    config.controlPlane.apiUrl,
+    config.controlPlane.nodeToken,
+  );
+
+  // Register with KCP if no token yet
+  if (!config.controlPlane.nodeToken) {
+    console.log('No NODE_API_TOKEN found. Registering with Control Plane...');
+    try {
+      const result = await cpClient.register({
+        name: config.controlPlane.nodeName,
+        host: getLocalIp(),
+        port: config.localApi.port,
+        platforms: config.runner.platforms,
+        labels: (process.env.NODE_LABELS || '').split(',').filter(Boolean),
+        version: '1.0.0',
+      });
+      cpClient.setToken(result.apiToken);
+      console.log(`Registered as node ${result.id}`);
+      console.log(`Node token: ${result.apiToken}`);
+      console.log('Save this token as NODE_API_TOKEN in .env for future starts.');
+    } catch (e: any) {
+      console.warn(`KCP registration failed: ${e.message}`);
+      console.warn('Continuing in standalone mode (Cloud-only).');
+    }
   }
 
+  // --- Cloud Client (KCD) - backward compatible ---
   const cloudClient = new CloudClient(config.cloud.apiUrl, config.cloud.runnerToken);
 
   // Initialize device session manager
@@ -72,48 +96,107 @@ async function main() {
   server.listen(config.localApi.port, bindAddr, () => {
     console.log(`Local API running on ${bindAddr}:${config.localApi.port}`);
     console.log(`Dashboard: http://localhost:${config.localApi.port}`);
-    if (bindAddr === '127.0.0.1' || bindAddr === 'localhost') {
-      console.log('NOTE: API bound to localhost only. Set LOCAL_API_BIND=0.0.0.0 to allow external access.');
-    }
   });
 
-  // Heartbeat payload builder — reports only CONNECTED (registered) devices
+  // --- Heartbeat builder (reports system resources + devices + slots) ---
   const buildHeartbeat = () => {
     const connectedDevices = sessionManager.getConnectedDevices();
+    const sessions = sessionManager.listSessions();
+    const stats = workerManager.getStats();
+
+    // Calculate slot usage from worker stats
+    const slotUsage: Record<string, { busy: number }> = {};
+    for (const [platform, info] of Object.entries(stats)) {
+      slotUsage[platform] = { busy: (info as any).activeJobs || 0 };
+    }
+
     return {
       devices: connectedDevices.map((d) => ({
-        id: d.id, platform: d.platform, name: d.name, model: d.model,
+        id: d.id,
+        platform: d.platform,
+        name: d.name,
+        model: d.model,
+        version: (d as any).version,
       })),
-      activeSessions: sessionManager.listSessions().length,
+      activeSessions: sessions.length,
+      slots: slotUsage,
       localApiPort: config.localApi.port,
       localApiHost: getLocalIp(),
     };
   };
 
-  // Send initial heartbeat immediately
-  try {
-    await cloudClient.sendHeartbeat('online', buildHeartbeat());
-    console.log('Initial heartbeat sent.');
-  } catch (e: any) {
-    console.error('Initial heartbeat failed:', e.message);
-  }
+  // --- Send heartbeats to both KCP and KCD ---
+  const sendHeartbeats = async () => {
+    const payload = buildHeartbeat();
 
-  // Then send periodically
-  const heartbeatInterval = setInterval(async () => {
+    // KCP heartbeat (enhanced with system resources)
     try {
-      await cloudClient.sendHeartbeat('online', buildHeartbeat());
+      await cpClient.sendHeartbeat(payload);
     } catch (e: any) {
-      console.error('Heartbeat failed:', e.message);
+      // KCP may not be running yet, that's ok
     }
-  }, 30_000);
+
+    // KCD heartbeat (backward compatible)
+    try {
+      await cloudClient.sendHeartbeat('online', payload);
+    } catch (e: any) {
+      console.error('Cloud heartbeat failed:', e.message);
+    }
+  };
+
+  await sendHeartbeats();
+  console.log('Initial heartbeat sent.');
+
+  const heartbeatInterval = setInterval(sendHeartbeats, 30_000);
+
+  // --- Job claim polling (pull pattern from KCP) ---
+  let jobClaimActive = true;
+  const pollJobs = async () => {
+    while (jobClaimActive) {
+      try {
+        const job = await cpClient.claimJob(config.runner.platforms);
+        if (job) {
+          console.log(`[KCP] Claimed job ${job.id} (${job.platform})`);
+          // Report started
+          await cpClient.reportJobStarted(job.id);
+          // Execute via existing worker infrastructure
+          // The job payload contains scenarioId and options
+          try {
+            const result = await workerManager.executeJob(job);
+            await cpClient.reportJobCompleted(job.id, {
+              passed: result.status === 'passed',
+              ...result,
+            });
+          } catch (err: any) {
+            await cpClient.reportJobCompleted(job.id, {
+              passed: false,
+              infraFailure: true,
+              error: err.message,
+            });
+          }
+        } else {
+          // No jobs available, wait before polling again
+          await new Promise((r) => setTimeout(r, 5_000));
+        }
+      } catch {
+        // KCP may not be available
+        await new Promise((r) => setTimeout(r, 10_000));
+      }
+    }
+  };
+
+  // Start job polling in background (non-blocking)
+  pollJobs();
 
   // Graceful shutdown
   const shutdown = async () => {
-    console.log('\nShutting down runner...');
+    console.log('\nShutting down node agent...');
+    jobClaimActive = false;
     clearInterval(heartbeatInterval);
     await sessionManager.shutdown();
     await workerManager.stop();
-    await cloudClient.sendHeartbeat('offline').catch(() => {});
+    try { await cpClient.sendHeartbeat({ devices: [], activeSessions: 0 }); } catch {}
+    try { await cloudClient.sendHeartbeat('offline'); } catch {}
     server.close();
     process.exit(0);
   };
