@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.env
+.env.local
+
+# Reports & Scenarios (runtime generated)
+reports/
+scenarios/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
