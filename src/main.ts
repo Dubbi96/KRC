@@ -5,6 +5,7 @@ import { CloudClient } from './worker/cloud-client';
 import { ControlPlaneClient } from './worker/control-plane-client';
 import { SessionManager } from './device/session-manager';
 import { createDeviceRouter, attachWebSocketStreaming } from './api/device-api';
+import { CloudTunnel } from './tunnel/cloud-tunnel';
 import http from 'http';
 import os from 'os';
 import fs from 'fs';
@@ -49,22 +50,27 @@ async function main() {
     config.controlPlane.nodeToken,
   );
 
-  // Register with KCP if no token yet
+  // Register or re-register with KCP
+  const registerWithKcp = async () => {
+    console.log('Registering with Control Plane...');
+    const result = await cpClient.register({
+      name: config.controlPlane.nodeName,
+      host: getLocalIp(),
+      port: config.localApi.port,
+      platforms: config.runner.platforms,
+      labels: (process.env.NODE_LABELS || '').split(',').filter(Boolean),
+      version: '1.0.0',
+    });
+    cpClient.setToken(result.apiToken);
+    console.log(`Registered as node ${result.id}`);
+    console.log(`Node token: ${result.apiToken}`);
+    console.log('Save this token as NODE_API_TOKEN in .env for future starts.');
+  };
+
   if (!config.controlPlane.nodeToken) {
-    console.log('No NODE_API_TOKEN found. Registering with Control Plane...');
+    console.log('No NODE_API_TOKEN found.');
     try {
-      const result = await cpClient.register({
-        name: config.controlPlane.nodeName,
-        host: getLocalIp(),
-        port: config.localApi.port,
-        platforms: config.runner.platforms,
-        labels: (process.env.NODE_LABELS || '').split(',').filter(Boolean),
-        version: '1.0.0',
-      });
-      cpClient.setToken(result.apiToken);
-      console.log(`Registered as node ${result.id}`);
-      console.log(`Node token: ${result.apiToken}`);
-      console.log('Save this token as NODE_API_TOKEN in .env for future starts.');
+      await registerWithKcp();
     } catch (e: any) {
       console.warn(`KCP registration failed: ${e.message}`);
       console.warn('Continuing in standalone mode (Cloud-only).');
@@ -120,6 +126,18 @@ async function main() {
     });
   });
 
+  // --- Cloud Tunnel (reverse WebSocket for KCD → KRC commands) ---
+  let cloudTunnel: CloudTunnel | null = null;
+  if (config.cloud.apiUrl && config.cloud.runnerToken) {
+    // Derive tunnel URL from CLOUD_API_URL: http://host/api/v1 → ws://host/ws/runner-tunnel
+    const tunnelUrl = config.cloud.apiUrl
+      .replace(/\/api\/v1\/?$/, '')
+      .replace(/^http/, 'ws') + '/ws/runner-tunnel';
+    cloudTunnel = new CloudTunnel(tunnelUrl, config.cloud.runnerToken, sessionManager);
+    cloudTunnel.connect();
+    console.log(`Cloud tunnel connecting to: ${tunnelUrl}`);
+  }
+
   // --- Heartbeat builder (reports system resources + devices + slots + health) ---
   const buildHeartbeat = () => {
     const connectedDevices = sessionManager.getConnectedDevices();
@@ -157,6 +175,7 @@ async function main() {
   };
 
   // --- Send heartbeats to both KCP and KCD ---
+  let kcpAuthRetried = false;
   const sendHeartbeats = async () => {
     const payload = buildHeartbeat();
 
@@ -164,8 +183,23 @@ async function main() {
     try {
       await cpClient.sendHeartbeat(payload);
       heartbeatLog('KCP heartbeat OK');
+      kcpAuthRetried = false; // Reset on success
     } catch (e: any) {
       heartbeatLog(`KCP heartbeat failed: ${e.message}`);
+      // Auto-re-register if token is invalid (e.g., KCP DB was reset)
+      if (!kcpAuthRetried && (e.message?.includes('401') || e.message?.includes('Unauthorized'))) {
+        kcpAuthRetried = true;
+        console.warn('[KRC] KCP auth failed — attempting re-registration...');
+        try {
+          await registerWithKcp();
+          // Retry heartbeat with new token
+          await cpClient.sendHeartbeat(payload);
+          heartbeatLog('KCP heartbeat OK (after re-registration)');
+          console.log('[KRC] Re-registration successful, heartbeat restored.');
+        } catch (regErr: any) {
+          console.warn(`[KRC] Re-registration failed: ${regErr.message}`);
+        }
+      }
     }
 
     // KCD heartbeat (backward compatible)
@@ -210,9 +244,11 @@ async function main() {
           console.log(`[KCP] Claimed job ${job.id} (${job.platform})`);
           // Report started
           await cpClient.reportJobStarted(job.id);
+          // scenarioRunId is a top-level field on the KCP job entity
+          const scenarioRunId = job.scenarioRunId || job.payload?.scenarioRunId;
           // Report scenario-run started if available
-          if (job.payload?.scenarioRunId) {
-            await cpClient.reportScenarioRunStarted(job.payload.scenarioRunId).catch(() => {});
+          if (scenarioRunId) {
+            await cpClient.reportScenarioRunStarted(scenarioRunId).catch(() => {});
           }
           // Execute via existing worker infrastructure
           try {
@@ -225,8 +261,8 @@ async function main() {
               error: result.error,
             });
             // Report scenario-run completion to KCP orchestrator
-            if (job.payload?.scenarioRunId) {
-              await cpClient.reportScenarioRunCompleted(job.payload.scenarioRunId, {
+            if (scenarioRunId) {
+              await cpClient.reportScenarioRunCompleted(scenarioRunId, {
                 status: result.status,
                 durationMs: result.durationMs,
                 error: result.error,
@@ -238,8 +274,8 @@ async function main() {
               infraFailure: true,
               error: err.message,
             });
-            if (job.payload?.scenarioRunId) {
-              await cpClient.reportScenarioRunCompleted(job.payload.scenarioRunId, {
+            if (scenarioRunId) {
+              await cpClient.reportScenarioRunCompleted(scenarioRunId, {
                 status: 'infra_failed',
                 error: err.message,
               }).catch(() => {});
@@ -302,6 +338,7 @@ async function main() {
     jobClaimActive = false;
     clearInterval(heartbeatInterval);
     clearInterval(cleanupInterval);
+    if (cloudTunnel) cloudTunnel.close();
     await sessionManager.shutdown();
     await workerManager.stop();
     try { await cpClient.sendHeartbeat({ devices: [], activeSessions: 0 }); } catch {}
