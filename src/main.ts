@@ -174,6 +174,9 @@ async function main() {
       localApiHost: getLocalIp(),
       appiumHealth,
       playwrightHealth: true, // Playwright is always ready (no server process)
+      supportedPlatforms: config.runner.platforms,
+      maxConcurrentJobs: maxConcurrentJobs,
+      activeJobCount: activeJobs.size,
     };
   };
 
@@ -219,79 +222,95 @@ async function main() {
 
   const heartbeatInterval = setInterval(sendHeartbeats, 30_000);
 
-  // --- Job claim polling (pull pattern from KCP) ---
+  // --- Job claim polling (concurrent pull pattern from KCP) ---
   let jobClaimActive = true;
+  const activeJobs = new Map<string, Promise<void>>();
+  // Allow at least one concurrent job per supported platform
+  const maxConcurrentJobs = Math.max(config.runner.platforms.length, 2);
+
+  const executeJobAsync = async (job: any) => {
+    const scenarioRunId = job.scenarioRunId || job.payload?.scenarioRunId;
+    try {
+      await cpClient.reportJobStarted(job.id);
+      if (scenarioRunId) {
+        await cpClient.reportScenarioRunStarted(scenarioRunId).catch(() => {});
+      }
+
+      const result = await workerManager.executeJob(job);
+      const passed = result.status === 'passed';
+      await cpClient.reportJobCompleted(job.id, {
+        passed,
+        status: result.status,
+        durationMs: result.durationMs,
+        error: result.error,
+      });
+      if (scenarioRunId) {
+        await cpClient.reportScenarioRunCompleted(scenarioRunId, {
+          status: result.status,
+          durationMs: result.durationMs,
+          error: result.error,
+        }).catch(() => {});
+      }
+    } catch (err: any) {
+      await cpClient.reportJobCompleted(job.id, {
+        passed: false,
+        infraFailure: true,
+        error: err.message,
+      });
+      if (scenarioRunId) {
+        await cpClient.reportScenarioRunCompleted(scenarioRunId, {
+          status: 'infra_failed',
+          error: err.message,
+        }).catch(() => {});
+      }
+    } finally {
+      activeJobs.delete(job.id);
+      console.log(`[KCP] Job ${job.id} done (active: ${activeJobs.size}/${maxConcurrentJobs})`);
+    }
+  };
+
   const pollJobs = async () => {
+    console.log(`[KRC] Job polling started (max concurrent: ${maxConcurrentJobs})`);
+
     while (jobClaimActive) {
       // Don't claim new jobs if draining
       if (cpClient.isDraining) {
-        const stats = workerManager.getStats();
-        const totalActive = Object.values(stats).reduce((sum, s) => sum + ((s as any).activeJobs || 0), 0);
-        if (totalActive === 0) {
+        if (activeJobs.size === 0) {
           console.log('[KRC] Drain complete — no active jobs remaining');
-          // Send final offline heartbeat (not via sendHeartbeat which sets 'online')
-          try {
-            await cloudClient.sendHeartbeat('offline');
-          } catch {}
-          // Keep running for dashboard access but stop polling
+          try { await cloudClient.sendHeartbeat('offline'); } catch {}
           break;
         }
-        // Still have active jobs — wait and check again
         await new Promise((r) => setTimeout(r, 5_000));
+        continue;
+      }
+
+      // Wait for capacity before claiming more jobs
+      if (activeJobs.size >= maxConcurrentJobs) {
+        await Promise.race([...activeJobs.values()]).catch(() => {});
         continue;
       }
 
       try {
         const job = await cpClient.claimJob(config.runner.platforms);
         if (job) {
-          console.log(`[KCP] Claimed job ${job.id} (${job.platform})`);
-          // Report started
-          await cpClient.reportJobStarted(job.id);
-          // scenarioRunId is a top-level field on the KCP job entity
-          const scenarioRunId = job.scenarioRunId || job.payload?.scenarioRunId;
-          // Report scenario-run started if available
-          if (scenarioRunId) {
-            await cpClient.reportScenarioRunStarted(scenarioRunId).catch(() => {});
-          }
-          // Execute via existing worker infrastructure
-          try {
-            const result = await workerManager.executeJob(job);
-            const passed = result.status === 'passed';
-            await cpClient.reportJobCompleted(job.id, {
-              passed,
-              status: result.status,
-              durationMs: result.durationMs,
-              error: result.error,
-            });
-            // Report scenario-run completion to KCP orchestrator
-            if (scenarioRunId) {
-              await cpClient.reportScenarioRunCompleted(scenarioRunId, {
-                status: result.status,
-                durationMs: result.durationMs,
-                error: result.error,
-              }).catch(() => {});
-            }
-          } catch (err: any) {
-            await cpClient.reportJobCompleted(job.id, {
-              passed: false,
-              infraFailure: true,
-              error: err.message,
-            });
-            if (scenarioRunId) {
-              await cpClient.reportScenarioRunCompleted(scenarioRunId, {
-                status: 'infra_failed',
-                error: err.message,
-              }).catch(() => {});
-            }
-          }
+          console.log(`[KCP] Claimed job ${job.id} (${job.platform}) — active: ${activeJobs.size + 1}/${maxConcurrentJobs}`);
+          // Fire execution without blocking the poll loop
+          const p = executeJobAsync(job);
+          activeJobs.set(job.id, p);
+          // Immediately try to claim the next job
+          continue;
         } else {
-          // No jobs available, wait before polling again
           await new Promise((r) => setTimeout(r, 5_000));
         }
       } catch {
-        // KCP may not be available
         await new Promise((r) => setTimeout(r, 10_000));
       }
+    }
+
+    // Wait for all in-flight jobs to finish
+    if (activeJobs.size > 0) {
+      console.log(`[KRC] Waiting for ${activeJobs.size} active job(s) to complete...`);
+      await Promise.allSettled([...activeJobs.values()]);
     }
   };
 
