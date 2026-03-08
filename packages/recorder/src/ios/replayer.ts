@@ -57,8 +57,30 @@ export class IOSReplayer {
       scenario.udid || '', scenario.appiumServerUrl || 'http://localhost:4723', {}
     );
 
+    // If a standby session exists (from KRC device connect), reuse it instead of creating new WDA
+    const reusingSession = !!scenario.existingAppiumSessionId;
+
     try {
-      await controller.createSession(scenario.bundleId);
+      if (reusingSession) {
+        console.log(`[IOSReplayer] Reusing standby Appium session: ${scenario.existingAppiumSessionId}`);
+        controller.attachSession(scenario.existingAppiumSessionId!);
+        // Activate the target app if bundleId is specified
+        if (scenario.bundleId) {
+          try {
+            const { executeAppiumAction } = await import('@katab/device-manager');
+            await executeAppiumAction(
+              scenario.appiumServerUrl || 'http://localhost:4723',
+              scenario.existingAppiumSessionId!,
+              'appium/device/activate_app',
+              { bundleId: scenario.bundleId },
+            );
+          } catch (e: any) {
+            console.warn(`[IOSReplayer] activate_app failed (non-fatal): ${e.message}`);
+          }
+        }
+      } else {
+        await controller.createSession(scenario.bundleId);
+      }
 
       // iOS assertion 평가를 위해 controller를 execCtx에 전달
       execCtx.iosController = controller;
@@ -201,7 +223,12 @@ export class IOSReplayer {
       return testResult;
     } finally {
       this.networkCollector?.destroy();
-      await controller.closeSession().catch(() => {});
+      // Don't close the session if reusing standby — WDA must stay running
+      if (!reusingSession) {
+        await controller.closeSession().catch(() => {});
+      } else {
+        console.log('[IOSReplayer] Keeping standby session alive (not closing WDA)');
+      }
     }
   }
 

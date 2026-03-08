@@ -407,6 +407,14 @@ export class IOSController {
   }
 
   /**
+   * Attach to an existing Appium session (e.g. standby WDA session).
+   * Skips session creation — the caller is responsible for keeping the session alive.
+   */
+  attachSession(sessionId: string): void {
+    this.sessionId = sessionId;
+  }
+
+  /**
    * Appium 세션 생성
    * Pre-flight: USB 연결 확인 → 디바이스 신뢰 확인 → WDA 캐시 정리 → 세션 생성
    */

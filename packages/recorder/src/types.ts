@@ -553,6 +553,8 @@ export interface RecordingScenario {
   bundleId?: string;
   package?: string;
   appiumServerUrl?: string;
+  /** Reuse an existing Appium session (standby WDA) instead of creating a new one */
+  existingAppiumSessionId?: string;
 
   // 녹화 시간
   startedAt: number;

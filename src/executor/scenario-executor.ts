@@ -9,6 +9,10 @@ export interface ExecuteOptions {
   options: Record<string, any>;
   scenarioDir: string;
   reportDir: string;
+  /** Existing Appium session ID to reuse (standby WDA) */
+  existingAppiumSessionId?: string;
+  /** Appium server URL for the existing session */
+  existingAppiumUrl?: string;
 }
 
 export interface ExecuteResult {
@@ -127,9 +131,18 @@ export class ScenarioExecutor {
         }
       }
 
+      // Pass standby Appium session info via env vars for iOS/Android session reuse
+      const childEnv: Record<string, string> = { ...process.env as any, FORCE_COLOR: '0' };
+      if (opts.existingAppiumSessionId) {
+        childEnv.EXISTING_APPIUM_SESSION_ID = opts.existingAppiumSessionId;
+      }
+      if (opts.existingAppiumUrl) {
+        childEnv.EXISTING_APPIUM_URL = opts.existingAppiumUrl;
+      }
+
       const child = spawn('node', args, {
         cwd: path.dirname(cliPath),
-        env: { ...process.env, FORCE_COLOR: '0' },
+        env: childEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 

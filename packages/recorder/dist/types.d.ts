@@ -419,6 +419,8 @@ export interface RecordingScenario {
     bundleId?: string;
     package?: string;
     appiumServerUrl?: string;
+    /** Reuse an existing Appium session (standby WDA) instead of creating a new one */
+    existingAppiumSessionId?: string;
     startedAt: number;
     stoppedAt?: number;
     events: RecordingEvent[];

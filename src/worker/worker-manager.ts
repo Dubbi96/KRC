@@ -129,7 +129,6 @@ export class WorkerManager {
     this.addLog(platform, job.id, 'kcp_job_started');
 
     const startTime = Date.now();
-    let releasedDeviceUdid: string | null = null;
     try {
       // Report started to KCD as well if scenarioRunId exists
       if (scenarioRunId) {
@@ -141,28 +140,32 @@ export class WorkerManager {
         await this.syncScenario(scenarioId);
       }
 
-      // Close active mirror sessions AND release standby Appium session
-      // before iOS/Android test to prevent WDA/port conflicts
+      // For iOS/Android: get standby session info to pass to recorder CLI for reuse.
+      // Also close any active mirror sessions to avoid device conflicts.
+      let existingAppiumSessionId: string | undefined;
+      let existingAppiumUrl: string | undefined;
       if ((platform === 'ios' || platform === 'android') && this.sessionManager && scenarioId) {
         try {
           const scenarioPath = path.join(config.paths.scenarioDir, `${scenarioId}.json`);
           const scenarioData = JSON.parse(fs.readFileSync(scenarioPath, 'utf-8'));
           const deviceUdid = scenarioData.deviceId || scenarioData.udid;
           if (deviceUdid) {
-            // Close active mirror session
+            // Close active mirror session (if any cloud user is borrowing the device)
             const existingSession = this.sessionManager.getSessionByDeviceId(deviceUdid, platform);
             if (existingSession) {
               console.log(`[WorkerManager] Closing active mirror session ${existingSession.id} on device ${deviceUdid} before test execution`);
               await this.sessionManager.closeSession(existingSession.id);
             }
-            // Release standby Appium session (frees WDA + ports for recorder CLI)
-            const released = await this.sessionManager.releaseStandbySession(deviceUdid);
-            if (released) {
-              releasedDeviceUdid = deviceUdid;
+            // Get standby Appium session info for recorder to reuse (WDA stays running)
+            const standbyInfo = this.sessionManager.getStandbySessionInfo(deviceUdid);
+            if (standbyInfo) {
+              existingAppiumSessionId = standbyInfo.sessionId;
+              existingAppiumUrl = standbyInfo.appiumUrl;
+              console.log(`[WorkerManager] Passing standby session ${existingAppiumSessionId} to recorder CLI`);
             }
           }
         } catch (e: any) {
-          console.warn(`[WorkerManager] Failed to release sessions: ${e.message}`);
+          console.warn(`[WorkerManager] Failed to prepare session: ${e.message}`);
         }
       }
 
@@ -172,14 +175,9 @@ export class WorkerManager {
         options: job.payload.options || {},
         scenarioDir: config.paths.scenarioDir,
         reportDir: config.paths.reportDir,
+        existingAppiumSessionId,
+        existingAppiumUrl,
       });
-
-      // Restore standby session after test execution
-      if (releasedDeviceUdid && this.sessionManager) {
-        this.sessionManager.restoreStandbySession(releasedDeviceUdid).catch((e: any) => {
-          console.warn(`[WorkerManager] Failed to restore standby session: ${e.message}`);
-        });
-      }
 
       const durationMs = Date.now() - startTime;
 
@@ -216,11 +214,6 @@ export class WorkerManager {
         stat.failedJobs++;
       }
       this.addLog(platform, job.id, 'kcp_job_failed', error.message);
-
-      // Restore standby session on error path too
-      if (releasedDeviceUdid && this.sessionManager) {
-        this.sessionManager.restoreStandbySession(releasedDeviceUdid).catch(() => {});
-      }
 
       return { status: 'infra_failed', durationMs, error: error.message };
     }

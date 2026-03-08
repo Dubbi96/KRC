@@ -339,59 +339,13 @@ export class SessionManager {
   }
 
   /**
-   * Release the standby Appium session for a device (before test execution).
-   * This frees the WDA/ports so the recorder CLI can create its own session.
-   * Returns true if a standby session was released.
+   * Get standby Appium session info for a device.
+   * Used by WorkerManager to pass to recorder CLI for session reuse.
    */
-  async releaseStandbySession(deviceId: string): Promise<boolean> {
+  getStandbySessionInfo(deviceId: string): { sessionId: string; appiumUrl: string } | null {
     const meta = this.connectedDeviceMeta.get(deviceId);
-    if (!meta?.appiumSessionId || !meta.appiumUrl) return false;
-
-    console.log(`[session] Releasing standby Appium session ${meta.appiumSessionId} for device ${deviceId}`);
-    try {
-      await fetch(`${meta.appiumUrl}/session/${meta.appiumSessionId}`, {
-        method: 'DELETE',
-        signal: AbortSignal.timeout(10_000),
-      });
-    } catch (err: any) {
-      console.warn(`[session] Failed to delete standby session: ${err.message}`);
-    }
-
-    // Release port pool so recorder can allocate fresh ports
-    portPool.release(deviceId);
-
-    // Clear standby session info (keep device connected)
-    meta.appiumSessionId = undefined;
-    meta.appiumUrl = undefined;
-    console.log(`[session] Standby session released for ${deviceId}`);
-    return true;
-  }
-
-  /**
-   * Restore the standby Appium session after test execution completes.
-   * Re-allocates ports and pre-starts WDA again.
-   */
-  async restoreStandbySession(deviceId: string): Promise<void> {
-    const meta = this.connectedDeviceMeta.get(deviceId);
-    if (!meta || meta.appiumSessionId) return; // already has a session or not connected
-
-    const device = this.deviceCache.find(d => d.id === deviceId);
-    if (!device || (device.platform !== 'ios' && device.platform !== 'android')) return;
-
-    console.log(`[session] Restoring standby Appium session for ${device.name}...`);
-    try {
-      const ports = portPool.allocate(deviceId);
-      const appiumPort = this.processManager?.getAppiumPort(device.platform) || (device.platform === 'ios' ? 4723 : 4724);
-      const appiumUrl = `http://localhost:${appiumPort}`;
-      const appiumSessionId = await this.createStandbyAppiumSession(device, appiumUrl);
-      if (appiumSessionId) {
-        meta.appiumSessionId = appiumSessionId;
-        meta.appiumUrl = appiumUrl;
-        console.log(`[session] Standby session restored for ${device.name} (session: ${appiumSessionId})`);
-      }
-    } catch (err: any) {
-      console.warn(`[session] Failed to restore standby session: ${err.message}`);
-    }
+    if (!meta?.appiumSessionId || !meta.appiumUrl) return null;
+    return { sessionId: meta.appiumSessionId, appiumUrl: meta.appiumUrl };
   }
 
   // ─── Sessions ────────────────────────────────────────

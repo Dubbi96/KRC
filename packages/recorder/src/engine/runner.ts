@@ -79,6 +79,14 @@ export class TestRunner {
 
   /** 플랫폼에 맞는 리플레이어로 실행 */
   private async replayScenario(scenario: RecordingScenario, options: ReplayOptions): Promise<TestResult> {
+    // Inject standby Appium session from env vars (set by KRC WorkerManager)
+    if (process.env.EXISTING_APPIUM_SESSION_ID && (scenario.platform === 'ios' || scenario.platform === 'android')) {
+      scenario.existingAppiumSessionId = process.env.EXISTING_APPIUM_SESSION_ID;
+      if (process.env.EXISTING_APPIUM_URL) {
+        scenario.appiumServerUrl = process.env.EXISTING_APPIUM_URL;
+      }
+    }
+
     switch (scenario.platform) {
       case 'web':
         return new WebReplayer().replay(scenario, options);
