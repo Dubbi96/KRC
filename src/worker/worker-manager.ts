@@ -129,6 +129,7 @@ export class WorkerManager {
     this.addLog(platform, job.id, 'kcp_job_started');
 
     const startTime = Date.now();
+    let releasedDeviceUdid: string | null = null;
     try {
       // Report started to KCD as well if scenarioRunId exists
       if (scenarioRunId) {
@@ -140,22 +141,28 @@ export class WorkerManager {
         await this.syncScenario(scenarioId);
       }
 
-      // Close active mirror sessions on the target device before iOS/Android test
-      // to prevent WDA conflicts (Appium can only manage one session per device)
+      // Close active mirror sessions AND release standby Appium session
+      // before iOS/Android test to prevent WDA/port conflicts
       if ((platform === 'ios' || platform === 'android') && this.sessionManager && scenarioId) {
         try {
           const scenarioPath = path.join(config.paths.scenarioDir, `${scenarioId}.json`);
           const scenarioData = JSON.parse(fs.readFileSync(scenarioPath, 'utf-8'));
           const deviceUdid = scenarioData.deviceId || scenarioData.udid;
           if (deviceUdid) {
+            // Close active mirror session
             const existingSession = this.sessionManager.getSessionByDeviceId(deviceUdid, platform);
             if (existingSession) {
               console.log(`[WorkerManager] Closing active mirror session ${existingSession.id} on device ${deviceUdid} before test execution`);
               await this.sessionManager.closeSession(existingSession.id);
             }
+            // Release standby Appium session (frees WDA + ports for recorder CLI)
+            const released = await this.sessionManager.releaseStandbySession(deviceUdid);
+            if (released) {
+              releasedDeviceUdid = deviceUdid;
+            }
           }
         } catch (e: any) {
-          console.warn(`[WorkerManager] Failed to close mirror session: ${e.message}`);
+          console.warn(`[WorkerManager] Failed to release sessions: ${e.message}`);
         }
       }
 
@@ -166,6 +173,13 @@ export class WorkerManager {
         scenarioDir: config.paths.scenarioDir,
         reportDir: config.paths.reportDir,
       });
+
+      // Restore standby session after test execution
+      if (releasedDeviceUdid && this.sessionManager) {
+        this.sessionManager.restoreStandbySession(releasedDeviceUdid).catch((e: any) => {
+          console.warn(`[WorkerManager] Failed to restore standby session: ${e.message}`);
+        });
+      }
 
       const durationMs = Date.now() - startTime;
 
@@ -202,6 +216,11 @@ export class WorkerManager {
         stat.failedJobs++;
       }
       this.addLog(platform, job.id, 'kcp_job_failed', error.message);
+
+      // Restore standby session on error path too
+      if (releasedDeviceUdid && this.sessionManager) {
+        this.sessionManager.restoreStandbySession(releasedDeviceUdid).catch(() => {});
+      }
 
       return { status: 'infra_failed', durationMs, error: error.message };
     }
