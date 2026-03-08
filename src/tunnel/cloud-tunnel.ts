@@ -30,6 +30,7 @@ export class CloudTunnel {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private authenticated = false;
   private closing = false;
+  private pingTimer: NodeJS.Timeout | null = null;
   /** KRC sessionId → cleanup function (remove event listeners) */
   private sessionCleanup = new Map<string, () => void>();
 
@@ -53,6 +54,12 @@ export class CloudTunnel {
     this.ws.on('open', () => {
       console.log('[Tunnel] Connected to KCD, authenticating...');
       this.send({ event: 'auth', data: { token: this.token } });
+      // Keep-alive ping every 30s to prevent ALB idle timeout (60s)
+      this.pingTimer = setInterval(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.ping();
+        }
+      }, 30_000);
     });
 
     this.ws.on('message', (raw: Buffer) => {
@@ -68,6 +75,7 @@ export class CloudTunnel {
       const reasonStr = reason?.toString() || '';
       console.log(`[Tunnel] Disconnected (code=${code} reason=${reasonStr})`);
       this.authenticated = false;
+      if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
       this.scheduleReconnect();
     });
 
@@ -302,10 +310,8 @@ export class CloudTunnel {
 
   close() {
     this.closing = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
     // Clean up all session forwardings
     for (const cleanup of this.sessionCleanup.values()) {
       cleanup();

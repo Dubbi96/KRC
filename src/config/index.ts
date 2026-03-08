@@ -8,14 +8,14 @@ dotenv.config();
 
 function resolveKatabCli(): string {
   if (process.env.KATAB_CLI_PATH) return process.env.KATAB_CLI_PATH;
-  // 1) npm package (production)
+  // 1) Local packages/recorder (bundled with KRC)
+  const localPkg = path.resolve(__dirname, '../../packages/recorder/dist/cli.js');
+  if (fs.existsSync(localPkg)) return localPkg;
+  // 2) npm package (production)
   const npmPath = path.resolve(__dirname, '../../node_modules/@katab/recorder/dist/cli.js');
   if (fs.existsSync(npmPath)) return npmPath;
-  // 2) Local Katab_Stack monorepo (development)
-  const localPath = path.resolve(__dirname, '../../../../Katab_Stack/packages/recorder/dist/cli.js');
-  if (fs.existsSync(localPath)) return localPath;
-  // 3) Return npm path as default (will show clear error at execution time)
-  return npmPath;
+  // 3) Return local package path as default (will show clear error at execution time)
+  return localPkg;
 }
 
 export const config = {
