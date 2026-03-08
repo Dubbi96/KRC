@@ -4,6 +4,7 @@ import { config } from '../config';
 import { ScenarioExecutor } from '../executor/scenario-executor';
 import { CloudClient } from './cloud-client';
 import { ProcessManager } from './process-manager';
+import type { SessionManager } from '../device/session-manager';
 
 export interface ScenarioJobPayload {
   tenantId: string;
@@ -35,10 +36,16 @@ export class WorkerManager {
   private stats: Map<string, WorkerStats> = new Map();
   private jobLogs: Array<{ time: string; platform: string; jobId: string; event: string; detail?: string }> = [];
   readonly processManager: ProcessManager;
+  private sessionManager: SessionManager | null = null;
 
   constructor(private cloudClient: CloudClient) {
     this.executor = new ScenarioExecutor();
     this.processManager = new ProcessManager();
+  }
+
+  /** Inject SessionManager so we can close mirror sessions before test execution */
+  setSessionManager(sm: SessionManager) {
+    this.sessionManager = sm;
   }
 
   private addLog(platform: string, jobId: string, event: string, detail?: string) {
@@ -131,6 +138,25 @@ export class WorkerManager {
       // Download and execute scenario
       if (scenarioId) {
         await this.syncScenario(scenarioId);
+      }
+
+      // Close active mirror sessions on the target device before iOS/Android test
+      // to prevent WDA conflicts (Appium can only manage one session per device)
+      if ((platform === 'ios' || platform === 'android') && this.sessionManager && scenarioId) {
+        try {
+          const scenarioPath = path.join(config.paths.scenarioDir, `${scenarioId}.json`);
+          const scenarioData = JSON.parse(fs.readFileSync(scenarioPath, 'utf-8'));
+          const deviceUdid = scenarioData.deviceId || scenarioData.udid;
+          if (deviceUdid) {
+            const existingSession = this.sessionManager.getSessionByDeviceId(deviceUdid, platform);
+            if (existingSession) {
+              console.log(`[WorkerManager] Closing active mirror session ${existingSession.id} on device ${deviceUdid} before test execution`);
+              await this.sessionManager.closeSession(existingSession.id);
+            }
+          }
+        } catch (e: any) {
+          console.warn(`[WorkerManager] Failed to close mirror session: ${e.message}`);
+        }
       }
 
       const result = await this.executor.execute({

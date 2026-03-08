@@ -93,6 +93,9 @@ async function main() {
   // 2) Inject ProcessManager into SessionManager for tunnel/port access
   sessionManager.setProcessManager(workerManager.processManager);
 
+  // 3) Inject SessionManager into WorkerManager (close mirror sessions before iOS/Android tests)
+  workerManager.setSessionManager(sessionManager);
+
   // 3) Devices are shown in KRC Dashboard — operator manually clicks "Connect"
   //    to register them. Only connected devices are reported to Cloud via heartbeat.
   console.log(`  → ${sessionManager.getDetectedDevices().length} device(s) available for connection in Dashboard.`);
