@@ -141,6 +141,11 @@ async function main() {
     console.log(`Cloud tunnel connecting to: ${tunnelUrl}`);
   }
 
+  // --- Job concurrency state (declared early so heartbeat can reference it) ---
+  let jobClaimActive = true;
+  const activeJobs = new Map<string, Promise<void>>();
+  const maxConcurrentJobs = Math.max(config.runner.platforms.length, 2);
+
   // --- Heartbeat builder (reports system resources + devices + slots + health) ---
   const buildHeartbeat = () => {
     const connectedDevices = sessionManager.getConnectedDevices();
@@ -223,10 +228,6 @@ async function main() {
   const heartbeatInterval = setInterval(sendHeartbeats, 30_000);
 
   // --- Job claim polling (concurrent pull pattern from KCP) ---
-  let jobClaimActive = true;
-  const activeJobs = new Map<string, Promise<void>>();
-  // Allow at least one concurrent job per supported platform
-  const maxConcurrentJobs = Math.max(config.runner.platforms.length, 2);
 
   const executeJobAsync = async (job: any) => {
     const scenarioRunId = job.scenarioRunId || job.payload?.scenarioRunId;
