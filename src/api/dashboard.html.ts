@@ -169,9 +169,9 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         Runs
       </button>
-      <button class="nav-item" onclick="showPage('queue')">
+      <button class="nav-item" onclick="showPage('jobs')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-        Queue
+        Jobs
       </button>
       <button class="nav-item" onclick="showPage('devices')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
@@ -214,13 +214,10 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
       <div id="runs-list"></div>
     </div>
 
-    <!-- QUEUE -->
-    <div class="page" id="page-queue">
-      <div class="page-title">Queue Management</div>
-      <div class="queue-tabs" id="q-platform-tabs"></div>
-      <div id="q-stats-area"></div>
-      <div class="job-status-tabs" id="q-status-tabs"></div>
-      <div id="q-jobs-list"></div>
+    <!-- JOBS -->
+    <div class="page" id="page-jobs">
+      <div class="page-title">Active Jobs</div>
+      <div id="jobs-info"></div>
     </div>
 
     <!-- DEVICES -->
@@ -266,10 +263,9 @@ const RUNNER_TOKEN = '__RUNNER_TOKEN__';
 const AUTH_HEADERS = RUNNER_TOKEN ? { 'Authorization': 'Bearer ' + RUNNER_TOKEN } : {};
 
 let currentPage = 'overview';
-let qPlatform = '', qStatus = 'waiting';
 let platforms = [];
 
-const PAGES = ['overview','platforms','runners','runs','queue','devices','logs'];
+const PAGES = ['overview','platforms','runners','runs','jobs','devices','logs'];
 
 function showPage(id) {
   currentPage = id;
@@ -319,7 +315,6 @@ async function refreshOverview() {
     let totalActive=0, totalDone=0, totalFailed=0;
     Object.values(workers).forEach(w => { totalActive += w.active||0; totalDone += w.completed||0; totalFailed += w.failed||0; });
     platforms = status.runner?.platforms || [];
-    if (!qPlatform && platforms.length > 0) qPlatform = platforms[0];
 
     const readyCount = (plats||[]).filter(p => p.ready).length;
     document.getElementById('overview-stats').innerHTML = [
@@ -479,50 +474,30 @@ async function refreshRuns() {
   }
 }
 
-// ========== QUEUE ==========
-function renderQPlatformTabs() {
-  document.getElementById('q-platform-tabs').innerHTML = platforms.map(p =>
-    '<button class="q-tab'+(p===qPlatform?' active':'')+'" onclick="setQPlatform(\\''+p+'\\')">'+p+'</button>'
-  ).join('');
-}
-function setQPlatform(p) { qPlatform = p; qStatus = 'waiting'; renderQPlatformTabs(); refreshQueue(); }
-function setQStatus(s) { qStatus = s; refreshQueue(); }
-
-async function refreshQueue() {
-  if (!qPlatform) { document.getElementById('q-stats-area').innerHTML = '<div class="empty">No platforms</div>'; return; }
-  renderQPlatformTabs();
+// ========== JOBS (pull-based from KCP) ==========
+async function refreshJobs() {
   try {
-    const [stats, jobs] = await Promise.all([
-      api('/queue/'+qPlatform+'/stats'),
-      api('/queue/'+qPlatform+'/jobs?status='+qStatus),
-    ]);
-    const statNames = ['waiting','active','completed','failed','delayed'];
-    document.getElementById('q-stats-area').innerHTML = '<div class="q-stat-row">' +
-      statNames.map(s => '<div class="q-stat '+s+'"><div class="n">'+(stats[s]||0)+'</div><div class="l">'+s+'</div></div>').join('') +
-    '</div>';
-    document.getElementById('q-status-tabs').innerHTML = statNames.map(s =>
-      '<button class="js-tab'+(s===qStatus?' active':'')+'" onclick="setQStatus(\\''+s+'\\')">'+s+' ('+(stats[s]||0)+')</button>'
-    ).join('');
-    if (!jobs || jobs.length === 0) {
-      document.getElementById('q-jobs-list').innerHTML = '<div class="empty">No '+qStatus+' jobs</div>';
-    } else {
-      let html = '<table><thead><tr><th>Job ID</th><th>Scenario</th><th>Attempts</th><th>Time</th><th></th></tr></thead><tbody>';
-      jobs.forEach(j => {
-        const sid = (j.data?.scenarioId||'').slice(0,8);
-        html += '<tr><td class="mono" style="color:var(--muted)">'+(j.id||'').slice(0,12)+'</td><td>'+sid+'</td><td>'+(j.attemptsMade||0)+'</td><td style="color:var(--muted)">'+fmtShort(j.timestamp)+'</td><td>';
-        if (qStatus==='failed') html += '<button class="btn btn-retry" onclick="retryJob(\\''+j.id+'\\')">Retry</button> ';
-        if (['waiting','failed','delayed'].includes(qStatus)) html += '<button class="btn btn-remove" onclick="removeJob(\\''+j.id+'\\')">Remove</button>';
-        html += '</td></tr>';
-      });
-      html += '</tbody></table>';
-      document.getElementById('q-jobs-list').innerHTML = '<div class="card">'+html+'</div>';
+    const status = await api('/status');
+    const workers = status.workers || {};
+    let html = '<div class="card"><h3>Job Execution Status</h3><p style="font-size:11px;color:var(--muted);margin-bottom:10px">Jobs are claimed from KCP (Control Plane) via pull pattern. No local queue.</p>';
+    html += '<div class="q-stat-row">';
+    let totalActive=0, totalDone=0, totalFailed=0;
+    Object.values(workers).forEach(w => { totalActive += w.active||0; totalDone += w.completed||0; totalFailed += w.failed||0; });
+    html += '<div class="q-stat active"><div class="n">'+totalActive+'</div><div class="l">Active</div></div>';
+    html += '<div class="q-stat completed"><div class="n">'+totalDone+'</div><div class="l">Completed</div></div>';
+    html += '<div class="q-stat failed"><div class="n">'+totalFailed+'</div><div class="l">Failed</div></div>';
+    html += '</div>';
+    // Per-platform breakdown
+    html += '<table><thead><tr><th>Platform</th><th>Active</th><th>Completed</th><th>Failed</th></tr></thead><tbody>';
+    for (const [p, w] of Object.entries(workers)) {
+      html += '<tr><td style="text-transform:uppercase;font-weight:600">'+p+'</td><td>'+(w.active||0)+'</td><td>'+(w.completed||0)+'</td><td>'+(w.failed||0)+'</td></tr>';
     }
+    html += '</tbody></table></div>';
+    document.getElementById('jobs-info').innerHTML = html;
   } catch(e) {
-    document.getElementById('q-stats-area').innerHTML = '<div class="empty">'+e.message+'</div>';
+    document.getElementById('jobs-info').innerHTML = '<div class="empty">'+e.message+'</div>';
   }
 }
-async function retryJob(id) { await apiPost('/queue/'+qPlatform+'/jobs/'+id+'/retry'); refreshQueue(); }
-async function removeJob(id) { if (!confirm('Remove?')) return; await apiDel('/queue/'+qPlatform+'/jobs/'+id); refreshQueue(); }
 
 // ========== LOGS ==========
 async function refreshLogs() {
@@ -767,7 +742,7 @@ async function refreshPage() {
   else if (currentPage === 'platforms') await refreshPlatforms();
   else if (currentPage === 'runners') await refreshRunners();
   else if (currentPage === 'runs') await refreshRuns();
-  else if (currentPage === 'queue') await refreshQueue();
+  else if (currentPage === 'jobs') await refreshJobs();
   else if (currentPage === 'devices') await refreshDevices();
   else if (currentPage === 'logs') await refreshLogs();
 }
