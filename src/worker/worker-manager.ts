@@ -186,6 +186,13 @@ export class WorkerManager {
       // Report to KCD with full step details (strip base64 blobs for payload size)
       if (scenarioRunId) {
         const resultJson = result.details ? this.stripBase64(result.details) : undefined;
+        const payloadSize = resultJson ? JSON.stringify(resultJson).length : 0;
+        const eventCount = resultJson?.events?.length ?? 0;
+        const assertionCount = resultJson?.assertionsSummary?.total ?? 0;
+        console.log(`[WorkerManager] reportCompleted → scenarioRunId=${scenarioRunId}, status=${result.passed ? 'passed' : 'failed'}, events=${eventCount}, assertions=${assertionCount}, payloadSize=${(payloadSize / 1024).toFixed(1)}KB`);
+        if (!resultJson) {
+          console.warn(`[WorkerManager] WARNING: resultJson is undefined! result.details=${!!result.details}`);
+        }
         await this.cloudClient.reportCompleted(scenarioRunId, {
           status: result.passed ? 'passed' : 'failed',
           durationMs,
