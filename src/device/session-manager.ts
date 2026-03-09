@@ -452,7 +452,9 @@ export class SessionManager {
   private attachAutoCleanup(sessionId: string, session: EventEmitter) {
     session.on('status', (status: string) => {
       if (status === 'closed') {
-        setTimeout(() => this.sessions.delete(sessionId), 60_000);
+        // Remove from active sessions immediately
+        this.sessions.delete(sessionId);
+        console.log(`[session] Session ${sessionId} removed from map (closed)`);
       }
     });
   }
@@ -477,8 +479,18 @@ export class SessionManager {
 
   async closeSession(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (!session) return;
-    await session.close();
+    if (!session) {
+      console.log(`[session] closeSession: session ${sessionId} not found (already closed?)`);
+      return;
+    }
+    console.log(`[session] Closing session ${sessionId} (status=${session.status})`);
+    try {
+      await session.close();
+    } catch (err: any) {
+      console.error(`[session] Error closing session ${sessionId}: ${err.message}`);
+    }
+    // Ensure removal even if close() threw or status listener didn't fire
+    this.sessions.delete(sessionId);
   }
 
   async handleAction(sessionId: string, action: any): Promise<void> {
@@ -504,7 +516,12 @@ export class SessionManager {
 
   listSessions(): SessionInfo[] {
     const result: SessionInfo[] = [];
-    for (const session of this.sessions.values()) {
+    for (const [id, session] of this.sessions) {
+      // Clean up any stale closed/error sessions still in the map
+      if (session.status === 'closed' || session.status === 'error') {
+        this.sessions.delete(id);
+        continue;
+      }
       result.push(session.getInfo());
     }
     return result;

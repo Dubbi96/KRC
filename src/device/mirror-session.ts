@@ -70,6 +70,7 @@ export class MirrorSession extends EventEmitter {
   private appiumSessionId: string | null = null;
   private appiumUrl: string;
   private screenshotTimer: NodeJS.Timeout | null = null;
+  private warmupTimer: NodeJS.Timeout | null = null;
   private fps: number;
   private maxWidth: number;
   private recording = false;
@@ -79,6 +80,10 @@ export class MirrorSession extends EventEmitter {
   /** Scale factor: screenshot pixels → device logical coordinates */
   private coordScale = 1;
   private screenshotDetected = false;
+  /** Prevents overlapping screenshot requests from piling up on Appium */
+  private screenshotInFlight = false;
+  private screenshotFailCount = 0;
+  private frameCount = 0;
   private pendingEnrich: Promise<void> | null = null;
   private lastPageSourceSnapshot: string | null = null;
   private snapshotBeforeTap: string | null = null;
@@ -393,11 +398,13 @@ export class MirrorSession extends EventEmitter {
     return { x: Math.round(x * this.coordScale), y: Math.round(y * this.coordScale) };
   }
 
-  private frameCount = 0;
-
   /**
    * Poll screenshots and emit them as 'frame' events.
    * For Android, waits a brief warmup period for UiAutomator2 to fully initialize.
+   *
+   * CRITICAL: Uses an in-flight guard to prevent overlapping requests.
+   * Without this, slow screenshot captures (1-5s) pile up on Appium,
+   * saturating the HTTP server and blocking ALL commands (tap, swipe, etc).
    */
   private startScreenshotPolling() {
     const intervalMs = Math.max(200, Math.floor(1000 / this.fps));
@@ -409,9 +416,16 @@ export class MirrorSession extends EventEmitter {
       console.log(`[${this.platform}:stream] Waiting ${warmupMs}ms for UiAutomator2 warmup...`);
     }
 
-    setTimeout(() => {
+    this.warmupTimer = setTimeout(() => {
+      this.warmupTimer = null;
+      if (this.status === 'closing' || this.status === 'closed') return;
+
       this.screenshotTimer = setInterval(async () => {
         if (this.status !== 'active' && this.status !== 'recording') return;
+        // Prevent overlapping screenshot requests — this is the key fix
+        if (this.screenshotInFlight) return;
+        this.screenshotInFlight = true;
+
         try {
           const frame = await this.captureScreenshot();
           if (frame) {
@@ -419,32 +433,30 @@ export class MirrorSession extends EventEmitter {
             this.detectCoordScale(frame);
             this.emit('frame', frame);
             if (this.frameCount === 1) {
-              console.log(`[${this.platform}:stream] First frame captured successfully — streaming is live`);
+              console.log(`[${this.platform}:stream] First frame captured — streaming is live`);
             } else if (this.frameCount === 10) {
               console.log(`[${this.platform}:stream] 10 frames captured — streaming stable`);
             }
           }
         } catch (err: any) {
-          // Transient screenshot failures are common, don't crash
           console.warn(`[${this.platform}:stream] Screenshot exception: ${err.message}`);
           this.emit('frame_error', err.message);
+        } finally {
+          this.screenshotInFlight = false;
         }
       }, intervalMs);
     }, warmupMs);
   }
-
-  private screenshotFailCount = 0;
 
   private async captureScreenshot(): Promise<string | null> {
     if (!this.appiumSessionId) return null;
 
     const res = await fetch(
       `${this.appiumUrl}/session/${this.appiumSessionId}/screenshot`,
-      { signal: AbortSignal.timeout(5000) },
+      { signal: AbortSignal.timeout(10_000) },
     );
     if (!res.ok) {
       this.screenshotFailCount++;
-      // Log first 5 failures and then every 50th to avoid spam
       if (this.screenshotFailCount <= 5 || this.screenshotFailCount % 50 === 0) {
         const body = await res.text().catch(() => '');
         console.warn(`[${this.platform}:screenshot] FAIL #${this.screenshotFailCount} — HTTP ${res.status}: ${body.slice(0, 200)}`);
@@ -764,13 +776,21 @@ export class MirrorSession extends EventEmitter {
    * Close the session and clean up.
    */
   async close(): Promise<void> {
+    if (this.status === 'closing' || this.status === 'closed') return;
     this.status = 'closing';
     this.emit('status', this.status);
+    console.log(`[${this.platform}] Closing session ${this.id}...`);
 
     // Wait for any pending enrichment (max 2s)
     if (this.pendingEnrich) {
       await Promise.race([this.pendingEnrich, new Promise(r => setTimeout(r, 2000))]).catch(() => {});
       this.pendingEnrich = null;
+    }
+
+    // Cancel warmup timer (prevents interval starting after close)
+    if (this.warmupTimer) {
+      clearTimeout(this.warmupTimer);
+      this.warmupTimer = null;
     }
 
     if (this.screenshotTimer) {
