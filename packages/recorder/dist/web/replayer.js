@@ -998,6 +998,7 @@ class WebReplayer {
             const assertFailed = assertionResults.some(r => !r.passed && !r.assertion.optional);
             const hasError = extraResult.error || assertFailed;
             let screenshot;
+            let screenshotBase64;
             if (screenshotDir) {
                 if (hasError) {
                     screenshot = (0, path_1.join)(screenshotDir, `step_${String(index + 1).padStart(3, '0')}_error.png`);
@@ -1008,6 +1009,12 @@ class WebReplayer {
                     await page.screenshot({ path: screenshot }).catch(() => { });
                 }
             }
+            // Always capture a small JPEG screenshot as base64 for cloud reports
+            try {
+                const buf = await page.screenshot({ type: 'jpeg', quality: 50, timeout: 3000 });
+                screenshotBase64 = buf.toString('base64');
+            }
+            catch { /* ignore screenshot failure */ }
             // 실패 시 현재 페이지 URL 포함
             let errorMsg = extraResult.error || (assertFailed ? assertionResults.filter(r => !r.passed).map(r => r.error).join('; ') : undefined);
             if (hasError) {
@@ -1028,16 +1035,24 @@ class WebReplayer {
                 assertionResults: assertionResults.length > 0 ? assertionResults : extraResult.assertionResults,
                 apiResponse: extraResult.apiResponse,
                 capturedVariables: extraResult.capturedVariables,
+                artifacts: screenshotBase64 ? { screenshotBase64, timestamp: Date.now() } : undefined,
             };
         }
         catch (error) {
             const isTimeout = error.message?.includes('스텝 타임아웃');
             const screenshotSuffix = isTimeout ? '_timeout' : '_error';
             let screenshot;
+            let screenshotBase64;
             if (screenshotDir) {
                 screenshot = (0, path_1.join)(screenshotDir, `step_${String(index + 1).padStart(3, '0')}${screenshotSuffix}.png`);
                 await page.screenshot({ path: screenshot }).catch(() => { });
             }
+            // Always capture base64 screenshot for cloud reports
+            try {
+                const buf = await page.screenshot({ type: 'jpeg', quality: 50, timeout: 3000 });
+                screenshotBase64 = buf.toString('base64');
+            }
+            catch { /* ignore */ }
             let currentUrl = 'unknown';
             try {
                 currentUrl = page.url();
@@ -1089,6 +1104,7 @@ class WebReplayer {
                 eventIndex: index, eventType: event.type, status: 'failed',
                 duration: Date.now() - start, error: detailedError, screenshot,
                 stepNo: event.stepNo, description: event.description,
+                artifacts: screenshotBase64 ? { screenshotBase64, timestamp: Date.now() } : undefined,
             };
         }
     }
