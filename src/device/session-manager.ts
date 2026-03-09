@@ -404,7 +404,9 @@ export class SessionManager {
     // Check if we have a pre-started Appium session from connect time
     const connectedMeta = this.connectedDeviceMeta.get(deviceId);
     const existingAppiumSessionId = connectedMeta?.appiumSessionId;
-    const appiumUrl = connectedMeta?.appiumUrl;
+    // Use appiumUrl from standby session, or derive from platform-specific port
+    const appiumUrl = connectedMeta?.appiumUrl
+      || `http://localhost:${this.processManager?.getAppiumPort(options.platform) || (options.platform === 'android' ? 4724 : 4723)}`;
 
     if (existingAppiumSessionId) {
       console.log(`[session] Reusing pre-started WDA session: ${existingAppiumSessionId}`);
