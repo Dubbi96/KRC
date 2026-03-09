@@ -65,13 +65,20 @@ get_pid() {
 }
 
 cmd_start() {
-  # Kill any orphan KRC node processes first
-  kill_orphans
-
   if is_running; then
     echo -e "${YELLOW}KRC is already running (PID: $(get_pid))${NC}"
     return 0
   fi
+
+  # Also check via pgrep — process may be alive but launchd/PID check missed it
+  if pgrep -f "node.*dist/main.js" &>/dev/null; then
+    local pid=$(pgrep -f "node.*dist/main.js" | head -1)
+    echo -e "${YELLOW}KRC is already running (PID: $pid)${NC}"
+    return 0
+  fi
+
+  # Kill leftover orphans only when we know nothing should be running
+  kill_orphans
 
   echo -e "${CYAN}Starting KRC...${NC}"
 
@@ -94,37 +101,20 @@ cmd_start() {
   # Wait up to 10s for startup (Intel Mac Mini can be slow)
   for i in {1..10}; do
     sleep 1
-    if is_running; then
-      echo -e "${GREEN}KRC started (PID: $(get_pid))${NC}"
+    if is_running || pgrep -f "node.*dist/main.js" &>/dev/null; then
+      local pid=$(get_pid)
+      [ -z "$pid" ] && pid=$(pgrep -f "node.*dist/main.js" | head -1)
+      echo -e "${GREEN}KRC started (PID: $pid)${NC}"
       return 0
     fi
   done
-
-  # Last check — process might be running but launchd PID not yet visible
-  if pgrep -f "node.*dist/main.js" &>/dev/null; then
-    local pid=$(pgrep -f "node.*dist/main.js" | head -1)
-    echo -e "${GREEN}KRC started (PID: $pid)${NC}"
-    return 0
-  fi
 
   echo -e "${RED}Failed to start KRC. Check logs: krc logs${NC}"
   return 1
 }
 
 kill_orphans() {
-  # Kill any orphan KRC node processes (prevents duplicate tunnel connections)
-  local pids=$(pgrep -f "node.*dist/main.js" 2>/dev/null || true)
-  if [ -n "$pids" ]; then
-    local count=$(echo "$pids" | wc -l | xargs)
-    if [ "$count" -gt 0 ]; then
-      echo -e "  ${YELLOW}Cleaning up $count orphan KRC process(es)...${NC}"
-      echo "$pids" | xargs kill 2>/dev/null || true
-      sleep 2
-      # Force-kill any remaining
-      echo "$pids" | xargs kill -9 2>/dev/null || true
-    fi
-  fi
-  # Also clean up orphan ts-node-dev processes (dev mode leftovers)
+  # Kill orphan ts-node-dev processes (dev mode leftovers)
   local tspids=$(pgrep -f "ts-node-dev.*src/main.ts" 2>/dev/null || true)
   if [ -n "$tspids" ]; then
     echo -e "  ${YELLOW}Cleaning up orphan ts-node-dev process(es)...${NC}"
@@ -132,21 +122,31 @@ kill_orphans() {
     sleep 1
     echo "$tspids" | xargs kill -9 2>/dev/null || true
   fi
+
+  # Kill ALL KRC node processes (only called when nothing should be running)
+  local pids=$(pgrep -f "node.*dist/main.js" 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    local count=$(echo "$pids" | wc -l | xargs)
+    echo -e "  ${YELLOW}Cleaning up $count leftover KRC process(es)...${NC}"
+    echo "$pids" | xargs kill 2>/dev/null || true
+    sleep 2
+    echo "$pids" | xargs kill -9 2>/dev/null || true
+  fi
 }
 
 cmd_stop() {
   echo -e "${CYAN}Stopping KRC...${NC}"
 
+  # IMPORTANT: Unload launchd plist FIRST to prevent KeepAlive auto-restart
   if [ -f "$PLIST_DIR/$LAUNCHD_LABEL.plist" ]; then
-    launchctl stop "$LAUNCHD_LABEL" 2>/dev/null || true
     launchctl unload "$PLIST_DIR/$LAUNCHD_LABEL.plist" 2>/dev/null || true
   fi
 
-  # Kill process directly as well
+  # Kill process directly
   local pid=$(get_pid)
   if [ -n "$pid" ]; then
     kill "$pid" 2>/dev/null || true
-    for i in {1..10}; do
+    for i in {1..5}; do
       kill -0 "$pid" 2>/dev/null || break
       sleep 1
     done
