@@ -702,7 +702,26 @@ async function refreshDevices() {
 
     // Connected Devices
     if (!devs || devs.length === 0) {
-      document.getElementById('devices-list').innerHTML = '<div class="empty">No devices detected. Attach iOS/Android via USB, or boot a Simulator/Emulator.</div>';
+      document.getElementById('devices-list').innerHTML =
+        '<div class="card" style="padding:16px">' +
+          '<div style="color:var(--warn);font-weight:600;margin-bottom:10px">No devices detected</div>' +
+          '<div style="font-size:11px;color:var(--muted);line-height:1.8">' +
+            '<div style="font-weight:500;color:#c9d1d9;margin-bottom:4px">Android Checklist:</div>' +
+            '<div style="padding-left:8px">' +
+              '1. USB cable connected<br>' +
+              '2. Settings > Developer options > USB debugging ON<br>' +
+              '3. "Allow USB debugging?" popup > Allow<br>' +
+              '4. USB mode: File Transfer (MTP), not Charging Only<br>' +
+              '5. Run <code style="background:#21262d;padding:2px 6px;border-radius:3px">adb devices</code> in terminal' +
+            '</div>' +
+            '<div style="font-weight:500;color:#c9d1d9;margin:8px 0 4px 0">iOS Checklist:</div>' +
+            '<div style="padding-left:8px">' +
+              '1. USB cable connected (Lightning/USB-C)<br>' +
+              '2. "Trust This Computer?" > Trust<br>' +
+              '3. Run <code style="background:#21262d;padding:2px 6px;border-radius:3px">xcrun xctrace list devices</code> in terminal' +
+            '</div>' +
+          '</div>' +
+        '</div>';
     } else {
       let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px">';
       devs.forEach(d => {

@@ -22,6 +22,10 @@
     <string>__USER_HOME__</string>
     <key>NODE_ENV</key>
     <string>production</string>
+    <key>JAVA_HOME</key>
+    <string>__JAVA_HOME__</string>
+    <key>ANDROID_HOME</key>
+    <string>__ANDROID_HOME__</string>
   </dict>
 
   <key>RunAtLoad</key>

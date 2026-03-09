@@ -115,6 +115,83 @@ cd "$KRC_HOME"
 npx playwright install chromium 2>/dev/null || true
 echo -e "  ${GREEN}✓${NC} Playwright browsers installed"
 
+# ─── Android dependencies (when RUNNER_PLATFORMS includes android) ───
+cd "$KRC_HOME"
+RUNNER_PLATFORMS=""
+if [ -f "$KRC_HOME/.env" ]; then
+  RUNNER_PLATFORMS=$(grep '^RUNNER_PLATFORMS=' "$KRC_HOME/.env" 2>/dev/null | cut -d'=' -f2 || true)
+fi
+
+if echo "$RUNNER_PLATFORMS" | grep -q "android"; then
+  echo -e "\n${CYAN}[4.1] Installing Android dependencies...${NC}"
+
+  if ! command -v adb &>/dev/null; then
+    echo -e "  Installing android-platform-tools (adb)..."
+    brew install --cask android-platform-tools
+  fi
+  echo -e "  ${GREEN}✓${NC} adb $(adb version 2>/dev/null | head -1 | awk '{print $NF}' || echo 'installed')"
+
+  if ! command -v appium &>/dev/null; then
+    echo -e "  Installing Appium..."
+    npm install -g appium
+  fi
+  echo -e "  ${GREEN}✓${NC} Appium $(appium --version 2>/dev/null || echo 'installed')"
+
+  if ! appium driver list 2>/dev/null | grep -q "uiautomator2.*installed"; then
+    echo -e "  Installing Appium UiAutomator2 driver..."
+    appium driver install uiautomator2
+  fi
+  echo -e "  ${GREEN}✓${NC} UiAutomator2 driver"
+
+  if ! command -v java &>/dev/null; then
+    echo -e "  Installing OpenJDK 17..."
+    brew install openjdk@17
+    # Symlink for system Java wrappers to find it
+    if [ -d "/usr/local/opt/openjdk@17" ]; then
+      sudo ln -sfn /usr/local/opt/openjdk@17/libexec/openjdk.jdk /Library/Java/JavaVirtualMachines/openjdk-17.jdk 2>/dev/null || true
+    elif [ -d "/opt/homebrew/opt/openjdk@17" ]; then
+      sudo ln -sfn /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk /Library/Java/JavaVirtualMachines/openjdk-17.jdk 2>/dev/null || true
+    fi
+  fi
+  echo -e "  ${GREEN}✓${NC} Java $(java -version 2>&1 | head -1 || echo 'installed')"
+
+  # Android SDK (cmdline-tools)
+  if [ -z "${ANDROID_HOME:-}" ] && [ ! -d "$HOME/Library/Android/sdk" ]; then
+    echo -e "  Installing Android SDK command-line tools..."
+    brew install --cask android-commandlinetools
+    # Determine ANDROID_HOME
+    if [ -d "/usr/local/share/android-commandlinetools" ]; then
+      export ANDROID_HOME=/usr/local/share/android-commandlinetools
+    elif [ -d "/opt/homebrew/share/android-commandlinetools" ]; then
+      export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
+    fi
+    # Determine JAVA_HOME
+    if [ -d "/usr/local/opt/openjdk@17" ]; then
+      export JAVA_HOME=/usr/local/opt/openjdk@17
+    elif [ -d "/opt/homebrew/opt/openjdk@17" ]; then
+      export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+    fi
+    yes | sdkmanager --sdk_root="$ANDROID_HOME" "platform-tools" "build-tools;34.0.0" "platforms;android-34" 2>/dev/null || true
+  fi
+  echo -e "  ${GREEN}✓${NC} Android SDK"
+fi
+
+# ─── iOS dependencies (when RUNNER_PLATFORMS includes ios) ───
+if echo "$RUNNER_PLATFORMS" | grep -q "ios"; then
+  echo -e "\n${CYAN}[4.2] Installing iOS dependencies...${NC}"
+
+  if ! command -v appium &>/dev/null; then
+    echo -e "  Installing Appium..."
+    npm install -g appium
+  fi
+
+  if ! appium driver list 2>/dev/null | grep -q "xcuitest.*installed"; then
+    echo -e "  Installing Appium XCUITest driver..."
+    appium driver install xcuitest
+  fi
+  echo -e "  ${GREEN}✓${NC} XCUITest driver"
+fi
+
 # ─── Step 5: Configuration ───
 echo -e "\n${CYAN}[5/7] Configuration...${NC}"
 
@@ -161,6 +238,32 @@ sed -i '' "s|__KRC_HOME__|$KRC_HOME|g" "$KRC_PLIST"
 sed -i '' "s|__USER_HOME__|$USER_HOME|g" "$KRC_PLIST"
 sed -i '' "s|__USER__|$CURRENT_USER|g" "$KRC_PLIST"
 sed -i '' "s|/usr/local/bin/node|$NODE_PATH|g" "$KRC_PLIST"
+
+# Resolve JAVA_HOME and ANDROID_HOME for launchd (Appium needs these)
+JAVA_HOME_VAL="${JAVA_HOME:-}"
+if [ -z "$JAVA_HOME_VAL" ]; then
+  # Auto-detect Java home
+  if [ -d "/usr/local/opt/openjdk@17" ]; then
+    JAVA_HOME_VAL="/usr/local/opt/openjdk@17"
+  elif [ -d "/opt/homebrew/opt/openjdk@17" ]; then
+    JAVA_HOME_VAL="/opt/homebrew/opt/openjdk@17"
+  elif /usr/libexec/java_home &>/dev/null; then
+    JAVA_HOME_VAL=$(/usr/libexec/java_home 2>/dev/null || true)
+  fi
+fi
+ANDROID_HOME_VAL="${ANDROID_HOME:-}"
+if [ -z "$ANDROID_HOME_VAL" ]; then
+  if [ -d "$HOME/Library/Android/sdk" ]; then
+    ANDROID_HOME_VAL="$HOME/Library/Android/sdk"
+  elif [ -d "/usr/local/share/android-commandlinetools" ]; then
+    ANDROID_HOME_VAL="/usr/local/share/android-commandlinetools"
+  elif [ -d "/opt/homebrew/share/android-commandlinetools" ]; then
+    ANDROID_HOME_VAL="/opt/homebrew/share/android-commandlinetools"
+  fi
+fi
+sed -i '' "s|__JAVA_HOME__|${JAVA_HOME_VAL:-/usr/local/opt/openjdk@17}|g" "$KRC_PLIST"
+sed -i '' "s|__ANDROID_HOME__|${ANDROID_HOME_VAL:-/usr/local/share/android-commandlinetools}|g" "$KRC_PLIST"
+
 echo -e "  ${GREEN}✓${NC} KRC service registered (auto-start on login)"
 
 # Auto-updater service

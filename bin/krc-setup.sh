@@ -47,9 +47,36 @@ printf "  Runner 이름 [${DEFAULT_NAME}]: "
 read -r RUNNER_NAME
 RUNNER_NAME="${RUNNER_NAME:-$DEFAULT_NAME}"
 
-printf "  플랫폼 (web,ios,android) [web]: "
+# Auto-detect connected devices to suggest platforms
+AUTO_PLATFORMS="web"
+if command -v adb &>/dev/null && adb devices 2>/dev/null | grep -qE '^\S+\s+device'; then
+  AUTO_PLATFORMS="web,android"
+fi
+if command -v xcrun &>/dev/null; then
+  TMPFILE=$(mktemp /tmp/katab-setup-XXXXXX.json)
+  if xcrun devicectl list devices --json-output "$TMPFILE" 2>/dev/null; then
+    if python3 -c "import json; d=json.load(open('$TMPFILE')); exit(0 if any(x.get('hardwareProperties',{}).get('platform')=='iOS' and x.get('hardwareProperties',{}).get('reality')=='physical' for x in d.get('result',{}).get('devices',[])) else 1)" 2>/dev/null; then
+      AUTO_PLATFORMS="${AUTO_PLATFORMS},ios"
+    fi
+  fi
+  rm -f "$TMPFILE"
+fi
+
+printf "  플랫폼 (web,ios,android) [${AUTO_PLATFORMS}]: "
 read -r PLATFORMS
-PLATFORMS="${PLATFORMS:-web}"
+PLATFORMS="${PLATFORMS:-$AUTO_PLATFORMS}"
+
+# Warn about missing dependencies
+if echo "$PLATFORMS" | grep -q "android"; then
+  if ! command -v adb &>/dev/null; then
+    echo -e "  ${YELLOW}⚠ Android selected but 'adb' not found.${NC}"
+    echo -e "    Install: brew install --cask android-platform-tools"
+  fi
+  if ! command -v java &>/dev/null; then
+    echo -e "  ${YELLOW}⚠ Android selected but 'java' not found.${NC}"
+    echo -e "    Install: brew install openjdk@17"
+  fi
+fi
 
 echo ""
 
