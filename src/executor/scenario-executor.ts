@@ -167,24 +167,28 @@ export class ScenarioExecutor {
       child.on('close', (code) => {
         clearTimeout(timeout);
 
-        if (code === 0) {
-          // Try to parse result from stdout
-          let details: any;
-          try {
-            const jsonMatch = stdout.match(/\{[\s\S]*\}$/);
-            if (jsonMatch) details = JSON.parse(jsonMatch[0]);
-          } catch {}
+        // Read the generated result.json for full step details, assertions, screenshots
+        const reportDir = path.join(opts.reportDir, opts.scenarioId);
+        const resultJsonPath = path.join(reportDir, 'result.json');
+        let details: any;
+        try {
+          if (fs.existsSync(resultJsonPath)) {
+            details = JSON.parse(fs.readFileSync(resultJsonPath, 'utf-8'));
+          }
+        } catch {}
 
+        if (code === 0) {
+          const passed = details?.status !== 'failed';
           resolve({
-            passed: true,
+            passed,
             details,
-            reportPath: path.join(opts.reportDir, opts.scenarioId),
+            reportPath: reportDir,
           });
         } else {
           resolve({
             passed: false,
             error: stderr || `Process exited with code ${code}`,
-            details: { stdout: stdout.slice(-2000), stderr: stderr.slice(-2000) },
+            details: details || { stdout: stdout.slice(-2000), stderr: stderr.slice(-2000) },
           });
         }
       });

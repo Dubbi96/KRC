@@ -181,13 +181,14 @@ export class WorkerManager {
 
       const durationMs = Date.now() - startTime;
 
-      // Report to KCD as well
+      // Report to KCD with full step details (strip base64 blobs for payload size)
       if (scenarioRunId) {
+        const resultJson = result.details ? this.stripBase64(result.details) : undefined;
         await this.cloudClient.reportCompleted(scenarioRunId, {
           status: result.passed ? 'passed' : 'failed',
           durationMs,
           error: result.error,
-          resultJson: result.details,
+          resultJson,
         }).catch(() => {});
       }
 
@@ -238,5 +239,27 @@ export class WorkerManager {
 
   getLogs() {
     return this.jobLogs;
+  }
+
+  /** Strip base64 blobs from TestResult to reduce payload size for KCD */
+  private stripBase64(details: any): any {
+    if (!details || typeof details !== 'object') return details;
+    const clone = JSON.parse(JSON.stringify(details));
+    if (Array.isArray(clone.events)) {
+      for (const ev of clone.events) {
+        // Strip screenshot base64 (keep file path reference)
+        if (ev.artifacts?.screenshotBase64) {
+          ev.artifacts.screenshotBase64 = '[stripped]';
+        }
+        if (ev.artifacts?.pageSourceXml) {
+          ev.artifacts.pageSourceXml = '[stripped]';
+        }
+        // Strip image match base64
+        if (ev.imageMatchData?.templateBase64) ev.imageMatchData.templateBase64 = '[stripped]';
+        if (ev.imageMatchData?.screenshotBase64) ev.imageMatchData.screenshotBase64 = '[stripped]';
+        if (ev.imageMatchData?.diffBase64) ev.imageMatchData.diffBase64 = '[stripped]';
+      }
+    }
+    return clone;
   }
 }
