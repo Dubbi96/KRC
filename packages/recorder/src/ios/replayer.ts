@@ -228,6 +228,27 @@ export class IOSReplayer {
         await controller.closeSession().catch(() => {});
       } else {
         console.log('[IOSReplayer] Keeping standby session alive (not closing WDA)');
+        // Return to home screen after scenario completion (unless chain continues)
+        if (process.env.RETURN_TO_HOME !== 'false') {
+          try {
+            // Terminate the running app
+            if (this.currentBundleId && scenario.existingAppiumSessionId) {
+              const { executeAppiumAction } = await import('@katab/device-manager');
+              await executeAppiumAction(
+                scenario.appiumServerUrl || 'http://localhost:4723',
+                scenario.existingAppiumSessionId,
+                'appium/device/terminate_app',
+                { bundleId: this.currentBundleId },
+              );
+              console.log(`[IOSReplayer] Terminated app: ${this.currentBundleId}`);
+            }
+            // Press Home button
+            await controller.home();
+            console.log('[IOSReplayer] Returned to home screen');
+          } catch (e: any) {
+            console.warn(`[IOSReplayer] Failed to return to home: ${e.message}`);
+          }
+        }
       }
     }
   }

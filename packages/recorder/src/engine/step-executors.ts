@@ -320,10 +320,19 @@ export async function executeApiRequest(
     // 저장된 API response를 context에 반영
     ctx.lastApiResponse = { status: response.status, headers: responseHeaders, body: responseBody };
 
-    // expectedStatus 검사
+    // expectedStatus 검사 (명시적)
     if (config.expectedStatus && response.status !== config.expectedStatus) {
       return {
         error: `API responded ${response.status}, expected ${config.expectedStatus}`,
+        apiResponse: { status: response.status, headers: responseHeaders, body: responseBody, duration: apiDuration },
+        capturedVariables: Object.keys(captured).length > 0 ? captured : undefined,
+      };
+    }
+
+    // Default: 4xx/5xx 응답은 실패로 처리 (expectedStatus 미지정 시)
+    if (!config.expectedStatus && response.status >= 400) {
+      return {
+        error: `API HTTP error ${response.status}: ${method} ${url}`,
         apiResponse: { status: response.status, headers: responseHeaders, body: responseBody, duration: apiDuration },
         capturedVariables: Object.keys(captured).length > 0 ? captured : undefined,
       };

@@ -177,6 +177,8 @@ export class WorkerManager {
         reportDir: config.paths.reportDir,
         existingAppiumSessionId,
         existingAppiumUrl,
+        // Default: return to home after mobile scenario. KCD can set returnToHome=false for chain continuation.
+        returnToHome: job.payload.options?.returnToHome !== false,
       });
 
       const durationMs = Date.now() - startTime;
@@ -241,16 +243,16 @@ export class WorkerManager {
     return this.jobLogs;
   }
 
-  /** Strip base64 blobs from TestResult to reduce payload size for KCD */
+  /** Strip large blobs from TestResult to reduce payload size for KCD.
+   *  Keeps screenshotBase64 so KCD can generate reports with step screenshots.
+   *  Strips pageSourceXml (debug-only, very large) and imageMatch blobs. */
   private stripBase64(details: any): any {
     if (!details || typeof details !== 'object') return details;
     const clone = JSON.parse(JSON.stringify(details));
     if (Array.isArray(clone.events)) {
       for (const ev of clone.events) {
-        // Strip screenshot base64 (keep file path reference)
-        if (ev.artifacts?.screenshotBase64) {
-          ev.artifacts.screenshotBase64 = '[stripped]';
-        }
+        // Keep screenshotBase64 — KCD needs it for report generation
+        // Strip pageSourceXml (debug-only, very large XML)
         if (ev.artifacts?.pageSourceXml) {
           ev.artifacts.pageSourceXml = '[stripped]';
         }

@@ -13,6 +13,8 @@ export interface ExecuteOptions {
   existingAppiumSessionId?: string;
   /** Appium server URL for the existing session */
   existingAppiumUrl?: string;
+  /** Whether to return to home screen after execution (default: true for mobile) */
+  returnToHome?: boolean;
 }
 
 export interface ExecuteResult {
@@ -138,6 +140,10 @@ export class ScenarioExecutor {
       }
       if (opts.existingAppiumUrl) {
         childEnv.EXISTING_APPIUM_URL = opts.existingAppiumUrl;
+      }
+      // Control home screen return for mobile (default: true)
+      if (opts.returnToHome === false) {
+        childEnv.RETURN_TO_HOME = 'false';
       }
 
       const child = spawn('node', args, {

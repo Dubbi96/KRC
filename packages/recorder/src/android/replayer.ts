@@ -44,9 +44,10 @@ export class AndroidReplayer {
 
     this.collector.start(scenario.id, scenario.name, scenario.platform);
 
+    let controller: any;
     try {
       const { AndroidController } = await import('@katab/device-manager');
-      const controller = new AndroidController(scenario.deviceId || '');
+      controller = new AndroidController(scenario.deviceId || '');
       this.currentDeviceId = scenario.deviceId;
       this.currentPackage = scenario.package;
 
@@ -95,6 +96,22 @@ export class AndroidReplayer {
       this.generator.generateJSON(testResult, outDir);
       this.generator.generateHTML(testResult, outDir);
       return testResult;
+    } finally {
+      // Return to home screen after scenario completion (unless chain continues)
+      if (controller && process.env.RETURN_TO_HOME !== 'false') {
+        try {
+          // Terminate the running app
+          if (this.currentPackage) {
+            await controller.stopApp(this.currentPackage);
+            console.log(`[AndroidReplayer] Terminated app: ${this.currentPackage}`);
+          }
+          // Press Home button
+          await controller.home();
+          console.log('[AndroidReplayer] Returned to home screen');
+        } catch (e: any) {
+          console.warn(`[AndroidReplayer] Failed to return to home: ${e.message}`);
+        }
+      }
     }
   }
 
