@@ -44,8 +44,14 @@ if ! command -v node &>/dev/null; then
     exit 1
   fi
   brew install node@20
-  echo 'export PATH="/opt/homebrew/opt/node@20/bin:$PATH"' >> ~/.zshrc
-  export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+  # node@20 is keg-only — add to PATH for both Intel and Apple Silicon Macs
+  if [ -d "/usr/local/opt/node@20/bin" ]; then
+    export PATH="/usr/local/opt/node@20/bin:$PATH"
+    grep -q 'node@20' ~/.zshrc 2>/dev/null || echo 'export PATH="/usr/local/opt/node@20/bin:$PATH"' >> ~/.zshrc
+  elif [ -d "/opt/homebrew/opt/node@20/bin" ]; then
+    export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+    grep -q 'node@20' ~/.zshrc 2>/dev/null || echo 'export PATH="/opt/homebrew/opt/node@20/bin:$PATH"' >> ~/.zshrc
+  fi
 fi
 
 NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
