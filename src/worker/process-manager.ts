@@ -195,13 +195,11 @@ export class ProcessManager {
 
       console.log(`[${platform}] Starting CoreDevice tunnel: ${tunnelScript}`);
 
-      // Try without sudo first — Appium XCUITest driver handles tunnel internally
-      // for USB-connected devices, so external tunnel is best-effort.
-      const isRoot = process.getuid?.() === 0;
-      const cmd = isRoot ? 'node' : 'node';
+      // Use process.execPath to resolve the node binary (launchd may not have node in PATH)
+      const nodeBin = process.execPath;
       const args = [tunnelScript];
 
-      const child = spawn(cmd, args, {
+      const child = spawn(nodeBin, args, {
         env: {
           ...process.env,
           NODE_PATH: process.env.NODE_PATH || path.join(os.homedir(), '.npm-global/lib/node_modules'),

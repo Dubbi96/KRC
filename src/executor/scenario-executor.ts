@@ -3,6 +3,15 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { config } from '../config';
 
+/**
+ * Resolve the absolute path to the node binary.
+ * Under launchd, 'node' may not be in PATH.
+ */
+function resolveNodeBin(): string {
+  // process.execPath is always the absolute path to the running node binary
+  return process.execPath;
+}
+
 export interface ExecuteOptions {
   scenarioId: string;
   platform: 'web' | 'ios' | 'android';
@@ -146,7 +155,8 @@ export class ScenarioExecutor {
         childEnv.RETURN_TO_HOME = 'false';
       }
 
-      const child = spawn('node', args, {
+      const nodeBin = resolveNodeBin();
+      const child = spawn(nodeBin, args, {
         cwd: path.dirname(cliPath),
         env: childEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
