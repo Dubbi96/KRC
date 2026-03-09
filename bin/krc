@@ -1,0 +1,303 @@
+#!/bin/bash
+# krc — Katab Runner Console CLI
+set -euo pipefail
+
+KRC_HOME="${KRC_HOME:-$HOME/Katab/KRC}"
+KRC_LOG_DIR="$KRC_HOME/logs"
+KRC_PID_FILE="$KRC_LOG_DIR/krc.pid"
+KRC_LOG_FILE="$KRC_LOG_DIR/krc.log"
+KRC_UPDATE_LOG="$KRC_LOG_DIR/auto-update.log"
+LAUNCHD_LABEL="com.katab.krc"
+LAUNCHD_UPDATER_LABEL="com.katab.krc-updater"
+PLIST_DIR="$HOME/Library/LaunchAgents"
+
+mkdir -p "$KRC_LOG_DIR"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+print_banner() {
+  echo -e "${CYAN}"
+  echo "  ╔═══════════════════════════════════╗"
+  echo "  ║   Katab Runner Console (KRC)      ║"
+  echo "  ╚═══════════════════════════════════╝"
+  echo -e "${NC}"
+}
+
+get_version() {
+  cd "$KRC_HOME"
+  local commit=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+  local date=$(git log -1 --format="%ci" 2>/dev/null | cut -d' ' -f1 || echo "unknown")
+  echo "$commit ($date)"
+}
+
+is_running() {
+  if launchctl list "$LAUNCHD_LABEL" &>/dev/null; then
+    local pid=$(launchctl list "$LAUNCHD_LABEL" 2>/dev/null | grep PID | awk '{print $NF}')
+    if [ -n "$pid" ] && [ "$pid" != "-" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  # Fallback: check PID file
+  if [ -f "$KRC_PID_FILE" ]; then
+    local pid=$(cat "$KRC_PID_FILE")
+    if kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+get_pid() {
+  if [ -f "$KRC_PID_FILE" ]; then
+    local pid=$(cat "$KRC_PID_FILE")
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "$pid"
+      return
+    fi
+  fi
+  # Try launchd
+  launchctl list "$LAUNCHD_LABEL" 2>/dev/null | grep -oE '[0-9]+' | head -1
+}
+
+cmd_start() {
+  if is_running; then
+    echo -e "${YELLOW}KRC is already running (PID: $(get_pid))${NC}"
+    return 0
+  fi
+
+  echo -e "${CYAN}Starting KRC...${NC}"
+
+  # Check if launchd plist exists
+  if [ -f "$PLIST_DIR/$LAUNCHD_LABEL.plist" ]; then
+    launchctl load "$PLIST_DIR/$LAUNCHD_LABEL.plist" 2>/dev/null || true
+    launchctl start "$LAUNCHD_LABEL" 2>/dev/null || true
+  else
+    # Direct start without launchd
+    cd "$KRC_HOME"
+    if [ ! -d "dist" ]; then
+      echo -e "${YELLOW}Building KRC first...${NC}"
+      npm run build
+      (cd packages/recorder && npm run build)
+    fi
+    nohup node dist/main.js >> "$KRC_LOG_FILE" 2>&1 &
+    echo $! > "$KRC_PID_FILE"
+  fi
+
+  sleep 2
+  if is_running; then
+    echo -e "${GREEN}KRC started (PID: $(get_pid))${NC}"
+  else
+    echo -e "${RED}Failed to start KRC. Check logs: krc logs${NC}"
+    return 1
+  fi
+}
+
+cmd_stop() {
+  if ! is_running; then
+    echo -e "${YELLOW}KRC is not running${NC}"
+    return 0
+  fi
+
+  echo -e "${CYAN}Stopping KRC...${NC}"
+
+  if [ -f "$PLIST_DIR/$LAUNCHD_LABEL.plist" ]; then
+    launchctl stop "$LAUNCHD_LABEL" 2>/dev/null || true
+    launchctl unload "$PLIST_DIR/$LAUNCHD_LABEL.plist" 2>/dev/null || true
+  fi
+
+  # Kill process directly as well
+  local pid=$(get_pid)
+  if [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null || true
+    # Wait for graceful shutdown
+    for i in {1..10}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+
+  rm -f "$KRC_PID_FILE"
+  echo -e "${GREEN}KRC stopped${NC}"
+}
+
+cmd_restart() {
+  cmd_stop
+  sleep 1
+  cmd_start
+}
+
+cmd_update() {
+  echo -e "${CYAN}Checking for updates...${NC}"
+  cd "$KRC_HOME"
+
+  git fetch origin main --quiet
+
+  local LOCAL=$(git rev-parse HEAD)
+  local REMOTE=$(git rev-parse origin/main)
+
+  if [ "$LOCAL" = "$REMOTE" ]; then
+    echo -e "${GREEN}Already up to date (${LOCAL:0:7})${NC}"
+    return 0
+  fi
+
+  echo -e "${YELLOW}New version available: ${LOCAL:0:7} → ${REMOTE:0:7}${NC}"
+  echo ""
+
+  # Show changelog
+  echo -e "${CYAN}Changes:${NC}"
+  git log --oneline "$LOCAL..$REMOTE" | head -10
+  echo ""
+
+  # Pull and rebuild
+  echo -e "${CYAN}Pulling updates...${NC}"
+  git pull origin main --ff-only
+
+  echo -e "${CYAN}Installing dependencies...${NC}"
+  npm install --production
+
+  echo -e "${CYAN}Building KRC...${NC}"
+  npm run build
+
+  echo -e "${CYAN}Building recorder...${NC}"
+  (cd packages/recorder && npm install --production && npm run build)
+
+  # Install Playwright browsers if needed
+  npx playwright install chromium 2>/dev/null || true
+
+  # Restart if running
+  if is_running; then
+    echo -e "${CYAN}Restarting KRC...${NC}"
+    cmd_restart
+  fi
+
+  echo -e "${GREEN}Updated to $(get_version)${NC}"
+}
+
+cmd_status() {
+  print_banner
+  echo -e "  ${CYAN}Version:${NC}    $(get_version)"
+  echo -e "  ${CYAN}Home:${NC}       $KRC_HOME"
+
+  if is_running; then
+    echo -e "  ${CYAN}Status:${NC}     ${GREEN}Running${NC} (PID: $(get_pid))"
+  else
+    echo -e "  ${CYAN}Status:${NC}     ${RED}Stopped${NC}"
+  fi
+
+  # .env info
+  if [ -f "$KRC_HOME/.env" ]; then
+    local cloud_url=$(grep CLOUD_API_URL "$KRC_HOME/.env" 2>/dev/null | cut -d= -f2-)
+    local platforms=$(grep RUNNER_PLATFORMS "$KRC_HOME/.env" 2>/dev/null | cut -d= -f2-)
+    local node_name=$(grep NODE_NAME "$KRC_HOME/.env" 2>/dev/null | cut -d= -f2-)
+    echo -e "  ${CYAN}Cloud:${NC}      ${cloud_url:-not set}"
+    echo -e "  ${CYAN}Platforms:${NC}  ${platforms:-web}"
+    echo -e "  ${CYAN}Node Name:${NC}  ${node_name:-$(hostname)}"
+  else
+    echo -e "  ${CYAN}Config:${NC}     ${RED}.env not found${NC}"
+  fi
+
+  # Auto-updater status
+  if launchctl list "$LAUNCHD_UPDATER_LABEL" &>/dev/null; then
+    echo -e "  ${CYAN}Auto-update:${NC} ${GREEN}Enabled${NC} (hourly)"
+  else
+    echo -e "  ${CYAN}Auto-update:${NC} ${YELLOW}Disabled${NC}"
+  fi
+
+  # Check for pending updates
+  cd "$KRC_HOME"
+  git fetch origin main --quiet 2>/dev/null || true
+  local LOCAL=$(git rev-parse HEAD 2>/dev/null)
+  local REMOTE=$(git rev-parse origin/main 2>/dev/null)
+  if [ -n "$LOCAL" ] && [ -n "$REMOTE" ] && [ "$LOCAL" != "$REMOTE" ]; then
+    local behind=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo "?")
+    echo -e "  ${CYAN}Updates:${NC}    ${YELLOW}${behind} commit(s) behind — run 'krc update'${NC}"
+  fi
+
+  echo ""
+}
+
+cmd_logs() {
+  local lines="${1:-50}"
+  if [ -f "$KRC_LOG_FILE" ]; then
+    tail -n "$lines" -f "$KRC_LOG_FILE"
+  else
+    echo -e "${YELLOW}No log file found at $KRC_LOG_FILE${NC}"
+  fi
+}
+
+cmd_config() {
+  local editor="${EDITOR:-nano}"
+  if [ ! -f "$KRC_HOME/.env" ]; then
+    cp "$KRC_HOME/.env.example" "$KRC_HOME/.env" 2>/dev/null || touch "$KRC_HOME/.env"
+  fi
+  "$editor" "$KRC_HOME/.env"
+  echo -e "${YELLOW}Restart KRC to apply changes: krc restart${NC}"
+}
+
+cmd_enable_autoupdate() {
+  if [ -f "$KRC_HOME/launchd/$LAUNCHD_UPDATER_LABEL.plist" ]; then
+    cp "$KRC_HOME/launchd/$LAUNCHD_UPDATER_LABEL.plist" "$PLIST_DIR/"
+    # Replace placeholder
+    sed -i '' "s|__KRC_HOME__|$KRC_HOME|g" "$PLIST_DIR/$LAUNCHD_UPDATER_LABEL.plist"
+    sed -i '' "s|__USER__|$(whoami)|g" "$PLIST_DIR/$LAUNCHD_UPDATER_LABEL.plist"
+    launchctl load "$PLIST_DIR/$LAUNCHD_UPDATER_LABEL.plist"
+    echo -e "${GREEN}Auto-update enabled (hourly check)${NC}"
+  else
+    echo -e "${RED}Updater plist not found${NC}"
+  fi
+}
+
+cmd_disable_autoupdate() {
+  if [ -f "$PLIST_DIR/$LAUNCHD_UPDATER_LABEL.plist" ]; then
+    launchctl unload "$PLIST_DIR/$LAUNCHD_UPDATER_LABEL.plist" 2>/dev/null || true
+    rm -f "$PLIST_DIR/$LAUNCHD_UPDATER_LABEL.plist"
+    echo -e "${GREEN}Auto-update disabled${NC}"
+  else
+    echo -e "${YELLOW}Auto-update is already disabled${NC}"
+  fi
+}
+
+cmd_help() {
+  print_banner
+  echo "Usage: krc <command>"
+  echo ""
+  echo "Commands:"
+  echo "  start              Start KRC"
+  echo "  stop               Stop KRC"
+  echo "  restart            Restart KRC"
+  echo "  status             Show KRC status"
+  echo "  update             Check and apply updates"
+  echo "  logs [lines]       Tail KRC logs (default: 50, follow mode)"
+  echo "  config             Edit .env configuration"
+  echo "  enable-autoupdate  Enable hourly auto-update check"
+  echo "  disable-autoupdate Disable auto-update"
+  echo "  version            Show current version"
+  echo "  help               Show this help"
+  echo ""
+}
+
+# Main dispatch
+case "${1:-help}" in
+  start)              cmd_start ;;
+  stop)               cmd_stop ;;
+  restart)            cmd_restart ;;
+  update)             cmd_update ;;
+  status)             cmd_status ;;
+  logs)               cmd_logs "${2:-50}" ;;
+  config)             cmd_config ;;
+  enable-autoupdate)  cmd_enable_autoupdate ;;
+  disable-autoupdate) cmd_disable_autoupdate ;;
+  version)            echo "KRC $(get_version)" ;;
+  help|--help|-h)     cmd_help ;;
+  *)
+    echo -e "${RED}Unknown command: $1${NC}"
+    cmd_help
+    exit 1
+    ;;
+esac
