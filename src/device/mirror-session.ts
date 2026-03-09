@@ -299,14 +299,19 @@ export class MirrorSession extends EventEmitter {
   }
 
   private async startAndroidSession(): Promise<void> {
+    console.log(`[Android] Creating Appium session for device ${this.deviceId}...`);
+    console.log(`[Android] Appium URL: ${this.appiumUrl}`);
+
     // Use port pool for per-device unique ports
     const { portPool: pp } = require('../worker/port-pool');
     const ports = pp.get(this.deviceId) || pp.allocate(this.deviceId);
+    console.log(`[Android] Ports — system: ${ports.systemPort}, mjpeg: ${ports.mjpegServerPort}, chromedriver: ${ports.chromedriverPort}`);
 
     const capabilities: Record<string, any> = {
       platformName: 'Android',
       'appium:automationName': 'UiAutomator2',
       'appium:deviceName': this.deviceId,
+      'appium:udid': this.deviceId,
       'appium:noReset': true,
       'appium:newCommandTimeout': 600,
       'appium:systemPort': ports.systemPort,
@@ -319,7 +324,9 @@ export class MirrorSession extends EventEmitter {
     }
 
     this.appiumSessionId = await this.createAppiumSession(capabilities);
+    console.log(`[Android] Session created: ${this.appiumSessionId}`);
     await this.fetchScreenSize();
+    console.log(`[Android] Screen size: ${this.screenSize.width}x${this.screenSize.height}`);
   }
 
   private async createAppiumSession(capabilities: Record<string, any>, timeoutMs = 300_000): Promise<string> {
@@ -386,26 +393,47 @@ export class MirrorSession extends EventEmitter {
     return { x: Math.round(x * this.coordScale), y: Math.round(y * this.coordScale) };
   }
 
+  private frameCount = 0;
+
   /**
    * Poll screenshots and emit them as 'frame' events.
+   * For Android, waits a brief warmup period for UiAutomator2 to fully initialize.
    */
   private startScreenshotPolling() {
     const intervalMs = Math.max(200, Math.floor(1000 / this.fps));
+    console.log(`[${this.platform}:stream] Starting screenshot polling (interval=${intervalMs}ms, appiumUrl=${this.appiumUrl}, sessionId=${this.appiumSessionId})`);
 
-    this.screenshotTimer = setInterval(async () => {
-      if (this.status !== 'active' && this.status !== 'recording') return;
-      try {
-        const frame = await this.captureScreenshot();
-        if (frame) {
-          this.detectCoordScale(frame);
-          this.emit('frame', frame);
+    // Android UiAutomator2 needs time to fully start — delay polling start
+    const warmupMs = this.platform === 'android' ? 3000 : 0;
+    if (warmupMs > 0) {
+      console.log(`[${this.platform}:stream] Waiting ${warmupMs}ms for UiAutomator2 warmup...`);
+    }
+
+    setTimeout(() => {
+      this.screenshotTimer = setInterval(async () => {
+        if (this.status !== 'active' && this.status !== 'recording') return;
+        try {
+          const frame = await this.captureScreenshot();
+          if (frame) {
+            this.frameCount++;
+            this.detectCoordScale(frame);
+            this.emit('frame', frame);
+            if (this.frameCount === 1) {
+              console.log(`[${this.platform}:stream] First frame captured successfully — streaming is live`);
+            } else if (this.frameCount === 10) {
+              console.log(`[${this.platform}:stream] 10 frames captured — streaming stable`);
+            }
+          }
+        } catch (err: any) {
+          // Transient screenshot failures are common, don't crash
+          console.warn(`[${this.platform}:stream] Screenshot exception: ${err.message}`);
+          this.emit('frame_error', err.message);
         }
-      } catch (err: any) {
-        // Transient screenshot failures are common, don't crash
-        this.emit('frame_error', err.message);
-      }
-    }, intervalMs);
+      }, intervalMs);
+    }, warmupMs);
   }
+
+  private screenshotFailCount = 0;
 
   private async captureScreenshot(): Promise<string | null> {
     if (!this.appiumSessionId) return null;
@@ -414,7 +442,20 @@ export class MirrorSession extends EventEmitter {
       `${this.appiumUrl}/session/${this.appiumSessionId}/screenshot`,
       { signal: AbortSignal.timeout(5000) },
     );
-    if (!res.ok) return null;
+    if (!res.ok) {
+      this.screenshotFailCount++;
+      // Log first 5 failures and then every 50th to avoid spam
+      if (this.screenshotFailCount <= 5 || this.screenshotFailCount % 50 === 0) {
+        const body = await res.text().catch(() => '');
+        console.warn(`[${this.platform}:screenshot] FAIL #${this.screenshotFailCount} — HTTP ${res.status}: ${body.slice(0, 200)}`);
+      }
+      return null;
+    }
+
+    if (this.screenshotFailCount > 0) {
+      console.log(`[${this.platform}:screenshot] Recovered after ${this.screenshotFailCount} failures`);
+      this.screenshotFailCount = 0;
+    }
 
     const data: any = await res.json();
     return data.value || null; // base64 PNG
