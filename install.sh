@@ -119,16 +119,10 @@ echo -e "  ${GREEN}✓${NC} Playwright browsers installed"
 echo -e "\n${CYAN}[5/7] Configuration...${NC}"
 
 if [ ! -f "$KRC_HOME/.env" ]; then
-  cp "$KRC_HOME/.env.example" "$KRC_HOME/.env"
-  echo -e "  ${YELLOW}Created .env from template — you MUST edit it before starting:${NC}"
-  echo -e "  ${YELLOW}  krc config${NC}"
+  echo -e "  ${CYAN}Runner 등록 및 .env 설정을 진행합니다.${NC}"
   echo ""
-  echo -e "  Required settings:"
-  echo -e "    ${CYAN}RUNNER_API_TOKEN${NC}  — Get from KCD Dashboard > Runners"
-  echo -e "    ${CYAN}NODE_API_TOKEN${NC}    — Auto-assigned on first KCP registration"
-  echo -e "    ${CYAN}RUNNER_PLATFORMS${NC}  — web, ios, android (comma-separated)"
-  echo -e "    ${CYAN}NODE_NAME${NC}         — Unique name for this runner"
-  NEEDS_CONFIG=true
+  KRC_HOME="$KRC_HOME" bash "$KRC_HOME/bin/krc-setup.sh"
+  NEEDS_CONFIG=false
 else
   echo -e "  ${GREEN}✓${NC} .env already exists (preserved)"
   NEEDS_CONFIG=false
@@ -180,25 +174,13 @@ echo -e "  ${GREEN}✓${NC} Auto-updater registered (hourly check)"
 # Load services (don't start yet if config needed)
 launchctl load "$UPDATER_PLIST" 2>/dev/null || true
 
-if [ "$NEEDS_CONFIG" = true ]; then
-  echo ""
-  echo -e "${YELLOW}═══════════════════════════════════════════════${NC}"
-  echo -e "${YELLOW}  Setup almost complete!${NC}"
-  echo -e "${YELLOW}  Edit .env configuration before starting:${NC}"
-  echo ""
-  echo -e "    ${CYAN}krc config${NC}     # Edit .env"
-  echo -e "    ${CYAN}krc start${NC}      # Start KRC"
-  echo -e "    ${CYAN}krc status${NC}     # Check status"
-  echo -e "${YELLOW}═══════════════════════════════════════════════${NC}"
-else
-  # Start KRC if config exists
-  launchctl load "$KRC_PLIST" 2>/dev/null || true
-  launchctl start com.katab.krc 2>/dev/null || true
-  echo ""
-  echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
-  echo -e "${GREEN}  KRC installed and started!${NC}"
-  echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
-fi
+# Start KRC
+launchctl load "$KRC_PLIST" 2>/dev/null || true
+launchctl start com.katab.krc 2>/dev/null || true
+echo ""
+echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
+echo -e "${GREEN}  KRC installed and started!${NC}"
+echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
 
 echo ""
 echo -e "  ${CYAN}Commands:${NC}"

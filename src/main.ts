@@ -64,7 +64,24 @@ async function main() {
     cpClient.setToken(result.apiToken);
     console.log(`Registered as node ${result.id}`);
     console.log(`Node token: ${result.apiToken}`);
-    console.log('Save this token as NODE_API_TOKEN in .env for future starts.');
+
+    // Auto-persist NODE_API_TOKEN to .env for future starts
+    try {
+      const envPath = require('path').resolve(__dirname, '../.env');
+      const fs = require('fs');
+      if (fs.existsSync(envPath)) {
+        let envContent = fs.readFileSync(envPath, 'utf-8');
+        if (envContent.includes('NODE_API_TOKEN=')) {
+          envContent = envContent.replace(/NODE_API_TOKEN=.*/, `NODE_API_TOKEN=${result.apiToken}`);
+        } else {
+          envContent += `\nNODE_API_TOKEN=${result.apiToken}\n`;
+        }
+        fs.writeFileSync(envPath, envContent, 'utf-8');
+        console.log('NODE_API_TOKEN saved to .env');
+      }
+    } catch (e: any) {
+      console.warn(`Could not save NODE_API_TOKEN to .env: ${e.message}`);
+    }
   };
 
   if (!config.controlPlane.nodeToken) {

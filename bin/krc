@@ -263,11 +263,16 @@ cmd_disable_autoupdate() {
   fi
 }
 
+cmd_setup() {
+  bash "$KRC_HOME/bin/krc-setup.sh"
+}
+
 cmd_help() {
   print_banner
   echo "Usage: krc <command>"
   echo ""
   echo "Commands:"
+  echo "  setup              Interactive setup (create runner, configure .env)"
   echo "  start              Start KRC"
   echo "  stop               Stop KRC"
   echo "  restart            Restart KRC"
@@ -284,6 +289,7 @@ cmd_help() {
 
 # Main dispatch
 case "${1:-help}" in
+  setup)              cmd_setup ;;
   start)              cmd_start ;;
   stop)               cmd_stop ;;
   restart)            cmd_restart ;;
