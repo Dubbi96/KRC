@@ -335,6 +335,18 @@ export class ProcessManager {
 
     env.DEVELOPER_DIR = env.DEVELOPER_DIR || '/Applications/Xcode.app/Contents/Developer';
 
+    // Ensure global npm modules are resolvable by Appium drivers (~/.appium/node_modules/).
+    // Drivers like uiautomator2 do require('appium/driver') which fails if the global
+    // appium package isn't in the Node.js module search path.
+    try {
+      const npmGlobalRoot = execFileSync('npm', ['root', '-g'], {
+        encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+      if (npmGlobalRoot && fs.existsSync(npmGlobalRoot)) {
+        env.NODE_PATH = `${npmGlobalRoot}:${env.NODE_PATH || ''}`;
+      }
+    } catch {}
+
     return env;
   }
 
