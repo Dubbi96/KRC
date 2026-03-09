@@ -10,7 +10,7 @@
  * for all sub-processes so the dashboard can display them in real-time.
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -276,6 +276,108 @@ export class ProcessManager {
   }
 
   /**
+   * Resolve environment variables needed for mobile platform processes.
+   * Under launchd, JAVA_HOME/ANDROID_HOME may not be set.
+   */
+  private resolveMobileEnv(): Record<string, string> {
+    const env: Record<string, string> = { ...process.env as any };
+
+    // Resolve JAVA_HOME
+    if (!env.JAVA_HOME) {
+      const javaHomeCandidates = [
+        '/usr/local/opt/openjdk@17',
+        '/opt/homebrew/opt/openjdk@17',
+        '/usr/local/opt/openjdk',
+        '/opt/homebrew/opt/openjdk',
+      ];
+      for (const p of javaHomeCandidates) {
+        if (fs.existsSync(p)) { env.JAVA_HOME = p; break; }
+      }
+      // macOS java_home fallback
+      if (!env.JAVA_HOME) {
+        try {
+          env.JAVA_HOME = execFileSync('/usr/libexec/java_home', {
+            encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'],
+          }).trim();
+        } catch {}
+      }
+    }
+
+    // Resolve ANDROID_HOME
+    if (!env.ANDROID_HOME) {
+      const androidHomeCandidates = [
+        path.join(os.homedir(), 'Library/Android/sdk'),
+        '/usr/local/share/android-commandlinetools',
+        '/opt/homebrew/share/android-commandlinetools',
+      ];
+      for (const p of androidHomeCandidates) {
+        if (fs.existsSync(p)) { env.ANDROID_HOME = p; break; }
+      }
+    }
+    // Also set ANDROID_SDK_ROOT (some tools use this)
+    if (env.ANDROID_HOME && !env.ANDROID_SDK_ROOT) {
+      env.ANDROID_SDK_ROOT = env.ANDROID_HOME;
+    }
+
+    // Ensure platform-tools is in PATH (for adb)
+    if (env.ANDROID_HOME) {
+      const ptPath = path.join(env.ANDROID_HOME, 'platform-tools');
+      if (fs.existsSync(ptPath) && !env.PATH?.includes(ptPath)) {
+        env.PATH = `${ptPath}:${env.PATH || ''}`;
+      }
+    }
+
+    // Ensure JAVA_HOME/bin is in PATH
+    if (env.JAVA_HOME) {
+      const javaBin = path.join(env.JAVA_HOME, 'bin');
+      if (fs.existsSync(javaBin) && !env.PATH?.includes(javaBin)) {
+        env.PATH = `${javaBin}:${env.PATH || ''}`;
+      }
+    }
+
+    env.DEVELOPER_DIR = env.DEVELOPER_DIR || '/Applications/Xcode.app/Contents/Developer';
+
+    return env;
+  }
+
+  /**
+   * Resolve the path to the appium binary.
+   * Under launchd, npm global bin might not be in PATH.
+   */
+  private resolveAppiumBin(): string {
+    // Check if appium is in PATH
+    try {
+      execFileSync('which', ['appium'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      return 'appium';
+    } catch {}
+
+    // Common npm global bin locations
+    const candidates = [
+      '/usr/local/bin/appium',
+      '/opt/homebrew/bin/appium',
+      path.join(os.homedir(), '.npm-global/bin/appium'),
+      path.join(os.homedir(), 'node_modules/.bin/appium'),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
+
+    // Try npm root -g
+    try {
+      const npmRoot = execFileSync('npm', ['root', '-g'], {
+        encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+      const appiumBin = path.join(npmRoot, '.bin/appium');
+      if (fs.existsSync(appiumBin)) return appiumBin;
+      // Also check parent/bin
+      const parentBin = path.join(path.dirname(npmRoot), 'bin/appium');
+      if (fs.existsSync(parentBin)) return parentBin;
+    } catch {}
+
+    return 'appium'; // fallback — spawn will fail with descriptive error
+  }
+
+  /**
    * Start Appium server for iOS or Android.
    */
   private async startAppium(platform: string): Promise<void> {
@@ -297,13 +399,15 @@ export class ProcessManager {
     proc.status = 'starting';
     this.emitUpdate();
 
+    const appiumBin = this.resolveAppiumBin();
+    const mobileEnv = this.resolveMobileEnv();
+
+    console.log(`[${platform}] Starting Appium: ${appiumBin} (JAVA_HOME=${mobileEnv.JAVA_HOME || 'unset'}, ANDROID_HOME=${mobileEnv.ANDROID_HOME || 'unset'})`);
+
     try {
       const args = ['--port', String(port), '--address', '0.0.0.0', '--log-level', 'info'];
-      const child = spawn('appium', args, {
-        env: {
-          ...process.env,
-          DEVELOPER_DIR: process.env.DEVELOPER_DIR || '/Applications/Xcode.app/Contents/Developer',
-        },
+      const child = spawn(appiumBin, args, {
+        env: mobileEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
@@ -311,36 +415,50 @@ export class ProcessManager {
       proc.pid = child.pid;
       proc.startedAt = new Date().toISOString();
 
+      // Capture stderr for diagnostics
+      let stderrBuf = '';
+      child.stderr?.on('data', (data) => {
+        stderrBuf += data.toString();
+        if (stderrBuf.length > 2000) stderrBuf = stderrBuf.slice(-1000);
+      });
+
       child.on('error', (err) => {
         proc.status = 'error';
         proc.error = `Failed to start Appium: ${err.message}. Install via: npm install -g appium`;
+        console.error(`[${platform}] Appium spawn error: ${err.message}`);
         this.emitUpdate();
       });
 
       child.on('exit', (code) => {
-        if (proc.status === 'running') {
+        if (proc.status !== 'running') {
+          proc.status = 'error';
+          proc.error = `Appium exited (code ${code}): ${stderrBuf.slice(0, 200)}`;
+          console.error(`[${platform}] Appium exited before ready (code ${code}): ${stderrBuf.slice(0, 300)}`);
+        } else {
           proc.status = 'error';
           proc.error = `Appium exited unexpectedly (code ${code})`;
-          this.emitUpdate();
         }
+        this.emitUpdate();
       });
 
       // Wait for Appium to be ready (poll /status)
       await new Promise<void>((resolve) => {
         let attempts = 0;
-        const maxAttempts = 30;
+        const maxAttempts = 60; // 60s timeout (Appium can be slow on first boot)
         const interval = setInterval(async () => {
           attempts++;
           if (await this.isAppiumRunning(port)) {
             clearInterval(interval);
             proc.status = 'running';
+            console.log(`[${platform}] Appium server ready on port ${port} (took ${attempts}s)`);
             this.startHealthCheck(platform, 'Appium Server', port);
             this.emitUpdate();
             resolve();
           } else if (attempts >= maxAttempts) {
             clearInterval(interval);
             proc.status = 'error';
-            proc.error = 'Appium failed to start within 30s';
+            proc.error = `Appium failed to start within ${maxAttempts}s. stderr: ${stderrBuf.slice(0, 200)}`;
+            console.error(`[${platform}] Appium timeout after ${maxAttempts}s. stderr: ${stderrBuf.slice(0, 500)}`);
             this.emitUpdate();
             resolve();
           }
