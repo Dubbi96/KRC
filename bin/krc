@@ -65,6 +65,9 @@ get_pid() {
 }
 
 cmd_start() {
+  # Kill any orphan KRC node processes first
+  kill_orphans
+
   if is_running; then
     echo -e "${YELLOW}KRC is already running (PID: $(get_pid))${NC}"
     return 0
@@ -88,21 +91,50 @@ cmd_start() {
     echo $! > "$KRC_PID_FILE"
   fi
 
-  sleep 2
-  if is_running; then
-    echo -e "${GREEN}KRC started (PID: $(get_pid))${NC}"
-  else
-    echo -e "${RED}Failed to start KRC. Check logs: krc logs${NC}"
-    return 1
+  # Wait up to 10s for startup (Intel Mac Mini can be slow)
+  for i in {1..10}; do
+    sleep 1
+    if is_running; then
+      echo -e "${GREEN}KRC started (PID: $(get_pid))${NC}"
+      return 0
+    fi
+  done
+
+  # Last check — process might be running but launchd PID not yet visible
+  if pgrep -f "node.*dist/main.js" &>/dev/null; then
+    local pid=$(pgrep -f "node.*dist/main.js" | head -1)
+    echo -e "${GREEN}KRC started (PID: $pid)${NC}"
+    return 0
+  fi
+
+  echo -e "${RED}Failed to start KRC. Check logs: krc logs${NC}"
+  return 1
+}
+
+kill_orphans() {
+  # Kill any orphan KRC node processes (prevents duplicate tunnel connections)
+  local pids=$(pgrep -f "node.*dist/main.js" 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    local count=$(echo "$pids" | wc -l | xargs)
+    if [ "$count" -gt 0 ]; then
+      echo -e "  ${YELLOW}Cleaning up $count orphan KRC process(es)...${NC}"
+      echo "$pids" | xargs kill 2>/dev/null || true
+      sleep 2
+      # Force-kill any remaining
+      echo "$pids" | xargs kill -9 2>/dev/null || true
+    fi
+  fi
+  # Also clean up orphan ts-node-dev processes (dev mode leftovers)
+  local tspids=$(pgrep -f "ts-node-dev.*src/main.ts" 2>/dev/null || true)
+  if [ -n "$tspids" ]; then
+    echo -e "  ${YELLOW}Cleaning up orphan ts-node-dev process(es)...${NC}"
+    echo "$tspids" | xargs kill 2>/dev/null || true
+    sleep 1
+    echo "$tspids" | xargs kill -9 2>/dev/null || true
   fi
 }
 
 cmd_stop() {
-  if ! is_running; then
-    echo -e "${YELLOW}KRC is not running${NC}"
-    return 0
-  fi
-
   echo -e "${CYAN}Stopping KRC...${NC}"
 
   if [ -f "$PLIST_DIR/$LAUNCHD_LABEL.plist" ]; then
@@ -114,13 +146,15 @@ cmd_stop() {
   local pid=$(get_pid)
   if [ -n "$pid" ]; then
     kill "$pid" 2>/dev/null || true
-    # Wait for graceful shutdown
     for i in {1..10}; do
       kill -0 "$pid" 2>/dev/null || break
       sleep 1
     done
     kill -9 "$pid" 2>/dev/null || true
   fi
+
+  # Kill any remaining orphan processes
+  kill_orphans
 
   rm -f "$KRC_PID_FILE"
   echo -e "${GREEN}KRC stopped${NC}"
@@ -267,6 +301,101 @@ cmd_setup() {
   bash "$KRC_HOME/bin/krc-setup.sh"
 }
 
+cmd_doctor() {
+  print_banner
+  echo -e "${CYAN}Running diagnostics...${NC}"
+  echo ""
+
+  # Check for orphan processes
+  local node_pids=$(pgrep -f "node.*dist/main.js" 2>/dev/null || true)
+  local tsnode_pids=$(pgrep -f "ts-node-dev.*src/main.ts" 2>/dev/null || true)
+  local all_pids="$node_pids"$'\n'"$tsnode_pids"
+  all_pids=$(echo "$all_pids" | sed '/^$/d')
+  local count=$(echo "$all_pids" | sed '/^$/d' | wc -l | xargs)
+
+  if [ "$count" -gt 1 ]; then
+    echo -e "  ${RED}✗ Multiple KRC processes detected ($count)${NC}"
+    echo -e "    This causes tunnel disconnect loops. Run: ${CYAN}krc restart${NC}"
+    echo "$all_pids" | while read pid; do
+      [ -z "$pid" ] && continue
+      local cmd=$(ps -p "$pid" -o command= 2>/dev/null | head -c 80)
+      echo -e "    PID $pid: $cmd"
+    done
+  elif [ "$count" -eq 1 ]; then
+    echo -e "  ${GREEN}✓${NC} Single KRC process (PID: $(echo "$all_pids" | head -1))"
+  else
+    echo -e "  ${YELLOW}–${NC} KRC not running"
+  fi
+
+  # Check port binding
+  if lsof -i :5001 -sTCP:LISTEN &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} Port 5001 bound"
+  else
+    echo -e "  ${YELLOW}–${NC} Port 5001 not bound (KRC may not be running)"
+  fi
+
+  # Check tunnel connectivity
+  local cloud_url=$(grep CLOUD_API_URL "$KRC_HOME/.env" 2>/dev/null | cut -d= -f2-)
+  if [ -n "$cloud_url" ]; then
+    if curl -s --connect-timeout 3 "$cloud_url/../health" &>/dev/null || curl -s --connect-timeout 3 "$cloud_url" &>/dev/null; then
+      echo -e "  ${GREEN}✓${NC} KCD reachable ($cloud_url)"
+    else
+      echo -e "  ${RED}✗ KCD unreachable ($cloud_url)${NC}"
+    fi
+  fi
+
+  # Check platforms and dependencies
+  local platforms=$(grep RUNNER_PLATFORMS "$KRC_HOME/.env" 2>/dev/null | cut -d= -f2-)
+  echo -e "  ${CYAN}Platforms:${NC} ${platforms:-web}"
+
+  if echo "$platforms" | grep -q "android"; then
+    if command -v adb &>/dev/null; then
+      local adb_count=$(adb devices 2>/dev/null | grep -c 'device$' || echo 0)
+      echo -e "  ${GREEN}✓${NC} adb installed (${adb_count} device(s))"
+    else
+      echo -e "  ${RED}✗ adb not found${NC} — brew install --cask android-platform-tools"
+    fi
+    if command -v java &>/dev/null; then
+      echo -e "  ${GREEN}✓${NC} Java $(java -version 2>&1 | head -1 | grep -oE '"[^"]+"' || echo 'found')"
+    else
+      echo -e "  ${RED}✗ Java not found${NC} — brew install openjdk@17"
+    fi
+    if [ -n "${ANDROID_HOME:-}" ] || [ -d "$HOME/Library/Android/sdk" ]; then
+      echo -e "  ${GREEN}✓${NC} ANDROID_HOME set"
+    else
+      echo -e "  ${YELLOW}⚠ ANDROID_HOME not set${NC}"
+    fi
+    if command -v appium &>/dev/null; then
+      local has_uia2=$(appium driver list 2>/dev/null | grep -c "uiautomator2.*installed" || echo 0)
+      echo -e "  ${GREEN}✓${NC} Appium $(appium --version 2>/dev/null || echo 'installed') (UiAutomator2: ${has_uia2})"
+    else
+      echo -e "  ${RED}✗ Appium not found${NC} — npm install -g appium"
+    fi
+  fi
+
+  if echo "$platforms" | grep -q "ios"; then
+    if command -v xcrun &>/dev/null; then
+      echo -e "  ${GREEN}✓${NC} Xcode CLI tools"
+    else
+      echo -e "  ${RED}✗ Xcode CLI tools not found${NC} — xcode-select --install"
+    fi
+  fi
+
+  # Check launchd plist
+  if [ -f "$PLIST_DIR/$LAUNCHD_LABEL.plist" ]; then
+    if grep -q "__JAVA_HOME__\|__ANDROID_HOME__\|__KRC_HOME__\|__USER__" "$PLIST_DIR/$LAUNCHD_LABEL.plist"; then
+      echo -e "  ${RED}✗ launchd plist has unresolved placeholders${NC}"
+      echo -e "    Re-run: ${CYAN}install.sh${NC} or update plist manually"
+    else
+      echo -e "  ${GREEN}✓${NC} launchd plist OK"
+    fi
+  else
+    echo -e "  ${YELLOW}–${NC} No launchd plist (direct-start mode)"
+  fi
+
+  echo ""
+}
+
 cmd_help() {
   print_banner
   echo "Usage: krc <command>"
@@ -277,6 +406,7 @@ cmd_help() {
   echo "  stop               Stop KRC"
   echo "  restart            Restart KRC"
   echo "  status             Show KRC status"
+  echo "  doctor             Diagnose issues (orphan processes, deps, tunnel)"
   echo "  update             Check and apply updates"
   echo "  logs [lines]       Tail KRC logs (default: 50, follow mode)"
   echo "  config             Edit .env configuration"
@@ -295,6 +425,7 @@ case "${1:-help}" in
   restart)            cmd_restart ;;
   update)             cmd_update ;;
   status)             cmd_status ;;
+  doctor)             cmd_doctor ;;
   logs)               cmd_logs "${2:-50}" ;;
   config)             cmd_config ;;
   enable-autoupdate)  cmd_enable_autoupdate ;;
