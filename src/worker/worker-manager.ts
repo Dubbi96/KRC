@@ -91,10 +91,10 @@ export class WorkerManager {
     };
 
     const scenarioFile = {
-      id: scenario.id,
+      ...scenario.scenarioData,
+      id: scenario.id,         // KCD entity ID must override scenarioData.id (recording-time ID)
       name: scenario.name,
       platform: scenario.platform,
-      ...scenario.scenarioData,
     };
 
     const filePath = path.join(scenarioDir, `${scenarioId}.json`);
@@ -191,7 +191,7 @@ export class WorkerManager {
           durationMs,
           error: result.error,
           resultJson,
-        }).catch(() => {});
+        }).catch((e) => console.error(`[WorkerManager] reportCompleted failed: ${e.message}`));
       }
 
       if (stat) {
@@ -209,7 +209,7 @@ export class WorkerManager {
           status: 'infra_failed',
           durationMs,
           error: error.message,
-        }).catch(() => {});
+        }).catch((e) => console.error(`[WorkerManager] reportCompleted (infra_failed) failed: ${e.message}`));
       }
 
       if (stat) {
