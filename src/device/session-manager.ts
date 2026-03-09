@@ -283,12 +283,21 @@ export class SessionManager {
           }
         }
         console.log(`[connect] WDA attempt ${attempt}/3...`);
-        const res = await fetch(`${appiumUrl}/session`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ capabilities: { alwaysMatch: caps } }),
-          signal: AbortSignal.timeout(300_000),
-        });
+        let res: globalThis.Response;
+        try {
+          res = await fetch(`${appiumUrl}/session`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ capabilities: { alwaysMatch: caps } }),
+            signal: AbortSignal.timeout(300_000),
+          });
+        } catch (fetchErr: any) {
+          const cause = fetchErr.cause?.code || '';
+          if (cause === 'ECONNREFUSED' || fetchErr.message === 'fetch failed') {
+            throw new Error(`Appium server not reachable at ${appiumUrl}. Is Appium running? (${cause || fetchErr.message})`);
+          }
+          throw fetchErr;
+        }
         if (!res.ok) {
           const text = await res.text();
           throw new Error(`${res.status} ${text.slice(0, 200)}`);

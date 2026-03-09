@@ -323,12 +323,21 @@ export class MirrorSession extends EventEmitter {
   }
 
   private async createAppiumSession(capabilities: Record<string, any>, timeoutMs = 300_000): Promise<string> {
-    const res = await fetch(`${this.appiumUrl}/session`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ capabilities: { alwaysMatch: capabilities } }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    let res: globalThis.Response;
+    try {
+      res = await fetch(`${this.appiumUrl}/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ capabilities: { alwaysMatch: capabilities } }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (fetchErr: any) {
+      const cause = fetchErr.cause?.code || '';
+      if (cause === 'ECONNREFUSED' || fetchErr.message === 'fetch failed') {
+        throw new Error(`Appium server not reachable at ${this.appiumUrl}. Is Appium running? (${cause || fetchErr.message})`);
+      }
+      throw fetchErr;
+    }
 
     if (!res.ok) {
       const text = await res.text();
