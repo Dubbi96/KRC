@@ -57,7 +57,7 @@ fi
 
 # Install dependencies
 log "Installing dependencies..."
-npm install --production >> "$LOG_FILE" 2>&1
+npm install >> "$LOG_FILE" 2>&1
 
 # Build KRC
 log "Building KRC..."
@@ -65,7 +65,7 @@ npm run build >> "$LOG_FILE" 2>&1
 
 # Build recorder
 log "Building recorder..."
-(cd packages/recorder && npm install --production && npm run build) >> "$LOG_FILE" 2>&1
+(cd packages/recorder && npm install && npm run build) >> "$LOG_FILE" 2>&1
 
 # Install Playwright browsers (only chromium to save space)
 npx playwright install chromium >> "$LOG_FILE" 2>&1 || true

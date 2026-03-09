@@ -159,13 +159,13 @@ cmd_update() {
   git pull origin main --ff-only
 
   echo -e "${CYAN}Installing dependencies...${NC}"
-  npm install --production
+  npm install
 
   echo -e "${CYAN}Building KRC...${NC}"
   npm run build
 
   echo -e "${CYAN}Building recorder...${NC}"
-  (cd packages/recorder && npm install --production && npm run build)
+  (cd packages/recorder && npm install && npm run build)
 
   # Install Playwright browsers if needed
   npx playwright install chromium 2>/dev/null || true

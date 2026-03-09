@@ -92,11 +92,11 @@ echo -e "  ${GREEN}✓${NC} KRC source ready ($(git rev-parse --short HEAD))"
 echo -e "\n${CYAN}[3/7] Installing dependencies...${NC}"
 
 cd "$KRC_HOME"
-npm install --production
+npm install
 echo -e "  ${GREEN}✓${NC} Root dependencies installed"
 
 cd "$KRC_HOME/packages/recorder"
-npm install --production
+npm install
 echo -e "  ${GREEN}✓${NC} Recorder dependencies installed"
 
 # ─── Step 4: Build ───
