@@ -6,6 +6,9 @@ import { ControlPlaneClient } from './worker/control-plane-client';
 import { SessionManager } from './device/session-manager';
 import { createDeviceRouter, attachWebSocketStreaming } from './api/device-api';
 import { CloudTunnel } from './tunnel/cloud-tunnel';
+import { ProviderRegistry } from './provider/provider-registry';
+import { DeviceCapabilityProbe } from './device/device-capability-probe';
+import { DeviceHealthSnapshot } from './common/health-model';
 import http from 'http';
 import os from 'os';
 import fs from 'fs';
@@ -101,6 +104,14 @@ async function main() {
   const sessionManager = new SessionManager();
   console.log(`Detected devices: ${sessionManager.getDetectedDevices().length}`);
 
+  // Initialize provider registry and capability probe
+  const providerRegistry = new ProviderRegistry({
+    iosAppiumPort: 4723,
+    androidAppiumPort: 4724,
+  });
+  const capabilityProbe = new DeviceCapabilityProbe(providerRegistry);
+  console.log(`Provider registry initialized: ${providerRegistry.all().map(p => p.type).join(', ')}`);
+
   // Initialize WorkerManager (KCP pull mode — no BullMQ/Redis)
   const workerManager = new WorkerManager(cloudClient);
 
@@ -163,6 +174,33 @@ async function main() {
   const activeJobs = new Map<string, Promise<void>>();
   const maxConcurrentJobs = Math.max(config.runner.platforms.length, 2);
 
+  // --- Device health cache (updated periodically) ---
+  let cachedDeviceHealth: Record<string, DeviceHealthSnapshot> = {};
+  const updateDeviceHealth = async () => {
+    try {
+      const connectedDevices = sessionManager.getConnectedDevices();
+      if (connectedDevices.length > 0) {
+        cachedDeviceHealth = await capabilityProbe.probeAll(
+          connectedDevices.map(d => ({
+            id: d.id,
+            platform: d.platform as 'ios' | 'android' | 'web',
+            name: d.name,
+            model: d.model,
+            udid: (d as any).udid || d.id,
+            isSimulator: (d as any).isSimulator,
+            isEmulator: (d as any).isEmulator,
+          })),
+        );
+      }
+    } catch (e: any) {
+      console.warn(`[HealthProbe] Failed: ${e.message}`);
+    }
+  };
+
+  // Run initial health probe, then every 60 seconds
+  updateDeviceHealth();
+  setInterval(updateDeviceHealth, 60_000);
+
   // --- Heartbeat builder (reports system resources + devices + slots + health) ---
   const buildHeartbeat = () => {
     const connectedDevices = sessionManager.getConnectedDevices();
@@ -199,6 +237,7 @@ async function main() {
       supportedPlatforms: config.runner.platforms,
       maxConcurrentJobs: maxConcurrentJobs,
       activeJobCount: activeJobs.size,
+      deviceHealth: cachedDeviceHealth,
     };
   };
 
