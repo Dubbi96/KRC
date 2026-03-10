@@ -260,8 +260,17 @@ export class CloudTunnel {
    */
   private attachSessionForwarding(session: AnySession) {
     const sessionId = session.id;
+    let tunnelFrameCount = 0;
 
     const onFrame = (base64: string) => {
+      tunnelFrameCount++;
+      if (tunnelFrameCount === 1) {
+        console.log(`[Tunnel] First frame forwarded for session ${sessionId} (${base64.length} bytes)`);
+      } else if (tunnelFrameCount === 10) {
+        console.log(`[Tunnel] 10 frames forwarded for session ${sessionId} — tunnel streaming stable`);
+      } else if (tunnelFrameCount % 100 === 0) {
+        console.log(`[Tunnel] ${tunnelFrameCount} frames forwarded for session ${sessionId}`);
+      }
       this.send({
         event: 'frame',
         data: { sessionId, data: base64 },
