@@ -6,14 +6,11 @@
  */
 
 import { Provider, DetectedDevice } from './provider.interface';
-import { FailureCode } from '../common/failure-taxonomy';
 import {
-  HealthCheckResult,
-  HealthStatus,
-  DeviceCapability,
-  ProviderType,
-} from '../common/health-model';
-import { RecoveryRecord, RecoveryAction } from '../common/recovery-types';
+  FailureCode,
+  HealthCheckResult, HealthCheckMode, HealthStatus, DeviceCapability, ProviderType,
+  RecoveryRecord, RecoveryAction,
+} from 'katab-shared';
 import { v4 as uuid } from 'uuid';
 import { execSync } from 'child_process';
 
@@ -27,10 +24,25 @@ export class AndroidRealProvider implements Provider {
     this.appiumPort = appiumPort;
   }
 
-  async healthCheck(device?: DetectedDevice): Promise<HealthCheckResult> {
+  async healthCheck(device?: DetectedDevice, mode: HealthCheckMode = HealthCheckMode.MEDIUM): Promise<HealthCheckResult> {
     const details: Record<string, boolean> = {};
 
-    // Check Appium server
+    if (mode === HealthCheckMode.LIGHTWEIGHT) {
+      // Lightweight: quick Appium /status only (no adb, no device probe)
+      try {
+        const resp = await fetch(`http://127.0.0.1:${this.appiumPort}/status`, { signal: AbortSignal.timeout(3000) });
+        details.appiumReachable = resp.ok;
+      } catch {
+        details.appiumReachable = false;
+      }
+      return {
+        status: details.appiumReachable ? HealthStatus.HEALTHY : HealthStatus.UNHEALTHY,
+        details,
+        failureCode: details.appiumReachable ? undefined : FailureCode.APPIUM_NOT_RUNNING,
+      };
+    }
+
+    // Medium+: Check Appium server
     try {
       const resp = await fetch(`http://127.0.0.1:${this.appiumPort}/status`, { signal: AbortSignal.timeout(5000) });
       details.appiumReachable = resp.ok;
@@ -38,7 +50,7 @@ export class AndroidRealProvider implements Provider {
       details.appiumReachable = false;
     }
 
-    // Check adb
+    // Medium+: Check adb
     try {
       execSync('adb devices -l 2>/dev/null', { timeout: 5000, stdio: 'pipe' });
       details.adbAvailable = true;
@@ -46,7 +58,7 @@ export class AndroidRealProvider implements Provider {
       details.adbAvailable = false;
     }
 
-    // Check specific device
+    // Medium+: Check specific device
     if (device?.udid) {
       try {
         const output = execSync('adb devices -l 2>/dev/null', { timeout: 5000, stdio: 'pipe' }).toString();
@@ -54,6 +66,20 @@ export class AndroidRealProvider implements Provider {
         details.deviceOnline = lines.some(l => l.startsWith(device.udid!));
       } catch {
         details.deviceOnline = false;
+      }
+    }
+
+    if (mode === HealthCheckMode.HEAVY) {
+      // Heavy: also verify adb shell responsiveness
+      if (device?.udid) {
+        try {
+          execSync(`adb -s ${device.udid} shell getprop ro.build.version.sdk 2>/dev/null`, {
+            timeout: 5000, stdio: 'pipe',
+          });
+          details.adbShellResponsive = true;
+        } catch {
+          details.adbShellResponsive = false;
+        }
       }
     }
 

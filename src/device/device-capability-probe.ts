@@ -7,11 +7,7 @@
 
 import { DetectedDevice } from '../provider/provider.interface';
 import { ProviderRegistry } from '../provider/provider-registry';
-import {
-  DeviceHealthSnapshot,
-  HealthStatus,
-  ProviderType,
-} from '../common/health-model';
+import { DeviceHealthSnapshot, HealthCheckMode, HealthStatus, ProviderType } from 'katab-shared';
 
 export class DeviceCapabilityProbe {
   constructor(private registry: ProviderRegistry) {}
@@ -37,7 +33,7 @@ export class DeviceCapabilityProbe {
 
     try {
       const [healthResult, capabilities] = await Promise.all([
-        provider.healthCheck(device),
+        provider.healthCheck(device, HealthCheckMode.LIGHTWEIGHT),
         provider.probeCapabilities(device),
       ]);
 

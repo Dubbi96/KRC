@@ -5,8 +5,7 @@
  * If checks fail, attempts recovery before giving up.
  */
 
-import { FailureCode } from '../common/failure-taxonomy';
-import { HealthStatus } from '../common/health-model';
+import { FailureCode, HealthCheckMode, HealthStatus } from 'katab-shared';
 import { Provider, DetectedDevice } from '../provider/provider.interface';
 import { ProviderRegistry } from '../provider/provider-registry';
 import { RecoveryRunner, RecoveryResult } from './recovery-runner';
@@ -47,8 +46,8 @@ export class PreflightService {
       };
     }
 
-    // 1. Provider health check
-    const healthResult = await provider.healthCheck(device);
+    // 1. Provider health check (MEDIUM mode for preflight)
+    const healthResult = await provider.healthCheck(device, HealthCheckMode.MEDIUM);
 
     if (healthResult.status === HealthStatus.HEALTHY) {
       return { passed: true, recoveryAttempted: false };
@@ -66,8 +65,8 @@ export class PreflightService {
     );
 
     if (recoveryResult.recovered) {
-      // Verify health after recovery
-      const recheck = await provider.healthCheck(device);
+      // Verify health after recovery (HEAVY mode for post-recovery verification)
+      const recheck = await provider.healthCheck(device, HealthCheckMode.HEAVY);
       if (recheck.status === HealthStatus.HEALTHY || recheck.status === HealthStatus.DEGRADED) {
         console.log('[Preflight] Recovery successful — proceeding with job');
         return { passed: true, recoveryAttempted: true, recoveryResult };

@@ -6,11 +6,11 @@
  * If all steps fail, optionally requests quarantine from KCP.
  */
 
-import { FailureCode, classifyFailure } from '../common/failure-taxonomy';
-import { RecoveryRecord, RecoveryAction } from '../common/recovery-types';
+import { FailureCode, classifyFailure, RecoveryRecord, RecoveryAction } from 'katab-shared';
 import { Provider, DetectedDevice } from '../provider/provider.interface';
 import { ProviderRegistry } from '../provider/provider-registry';
 import { RecoveryStrategyEngine } from './recovery-strategy';
+import { RecoveryBudget } from './recovery-budget';
 
 export interface RecoveryResult {
   recovered: boolean;
@@ -23,6 +23,7 @@ export interface RecoveryResult {
 export class RecoveryRunner {
   private strategyEngine = new RecoveryStrategyEngine();
   private recentRecords: RecoveryRecord[] = [];
+  private budget = new RecoveryBudget();
 
   constructor(private registry: ProviderRegistry) {}
 
@@ -53,6 +54,20 @@ export class RecoveryRunner {
       };
     }
 
+    // Check recovery budget before attempting
+    const deviceId = device?.id || platform;
+    const budgetCheck = this.budget.check(deviceId, failureCode);
+    if (!budgetCheck.allowed) {
+      console.warn(`[Recovery] Budget exceeded for ${deviceId}: ${budgetCheck.reason}`);
+      return {
+        recovered: false,
+        records: [],
+        shouldQuarantine: true,
+        quarantineDurationMinutes: strategy.quarantineDurationMinutes || 30,
+        finalFailureCode: failureCode,
+      };
+    }
+
     const records: RecoveryRecord[] = [];
 
     // Try each action in order
@@ -71,6 +86,7 @@ export class RecoveryRunner {
 
         if (record.success) {
           console.log(`[Recovery] ${action} succeeded for ${failureCode}`);
+          this.budget.record(deviceId, failureCode, action, true);
           return {
             recovered: true,
             records,
@@ -81,6 +97,7 @@ export class RecoveryRunner {
         }
 
         console.log(`[Recovery] ${action} failed: ${record.errorMessage || 'unknown reason'}`);
+        this.budget.record(deviceId, failureCode, action, false);
       } catch (e: any) {
         console.error(`[Recovery] ${action} threw error: ${e.message}`);
         records.push({

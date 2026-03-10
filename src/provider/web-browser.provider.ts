@@ -6,14 +6,11 @@
  */
 
 import { Provider, DetectedDevice, CreateSessionOptions } from './provider.interface';
-import { FailureCode, classifyFailure } from '../common/failure-taxonomy';
 import {
-  HealthCheckResult,
-  HealthStatus,
-  DeviceCapability,
-  ProviderType,
-} from '../common/health-model';
-import { RecoveryRecord, RecoveryAction } from '../common/recovery-types';
+  FailureCode, classifyFailure,
+  HealthCheckResult, HealthCheckMode, HealthStatus, DeviceCapability, ProviderType,
+  RecoveryRecord, RecoveryAction,
+} from 'katab-shared';
 import { v4 as uuid } from 'uuid';
 import { execSync } from 'child_process';
 
@@ -21,10 +18,16 @@ export class WebBrowserProvider implements Provider {
   readonly type = ProviderType.WEB_BROWSER;
   readonly platform = 'web' as const;
 
-  async healthCheck(): Promise<HealthCheckResult> {
+  async healthCheck(_device?: DetectedDevice, mode: HealthCheckMode = HealthCheckMode.MEDIUM): Promise<HealthCheckResult> {
     const details: Record<string, boolean> = {};
 
-    // Check if npx playwright is available
+    if (mode === HealthCheckMode.LIGHTWEIGHT) {
+      // Lightweight: just check process exists
+      details.playwrightAvailable = true; // assume available for web
+      return { status: HealthStatus.HEALTHY, details };
+    }
+
+    // Medium+: Check if npx playwright is available
     try {
       execSync('npx playwright --version', { timeout: 10000, stdio: 'pipe' });
       details.playwrightAvailable = true;
@@ -32,17 +35,19 @@ export class WebBrowserProvider implements Provider {
       details.playwrightAvailable = false;
     }
 
-    // Check for stale browser processes
-    try {
-      const result = execSync("pgrep -f 'chromium|chrome|firefox|webkit' 2>/dev/null | wc -l", {
-        timeout: 5000, stdio: 'pipe',
-      }).toString().trim();
-      details.staleBrowserProcesses = parseInt(result, 10) > 20; // arbitrary threshold
-    } catch {
-      details.staleBrowserProcesses = false;
+    if (mode === HealthCheckMode.HEAVY) {
+      // Heavy: also check for stale browser processes
+      try {
+        const result = execSync("pgrep -f 'chromium|chrome|firefox|webkit' 2>/dev/null | wc -l", {
+          timeout: 5000, stdio: 'pipe',
+        }).toString().trim();
+        details.staleBrowserProcesses = parseInt(result, 10) > 20;
+      } catch {
+        details.staleBrowserProcesses = false;
+      }
     }
 
-    const allGood = details.playwrightAvailable && !details.staleBrowserProcesses;
+    const allGood = details.playwrightAvailable && !(details.staleBrowserProcesses);
     return {
       status: allGood ? HealthStatus.HEALTHY : details.playwrightAvailable ? HealthStatus.DEGRADED : HealthStatus.UNHEALTHY,
       details,

@@ -43,6 +43,10 @@ export const config = {
     port: parseInt(process.env.LOCAL_API_PORT || '5001'),
     bind: process.env.LOCAL_API_BIND || '0.0.0.0',
   },
+  retention: {
+    reportDays: parseInt(process.env.REPORT_RETENTION_DAYS || '7'),
+    logDays: parseInt(process.env.LOG_RETENTION_DAYS || '14'),
+  },
   mtls: {
     caCert: process.env.MTLS_CA_CERT || '',
     clientCert: process.env.MTLS_CLIENT_CERT || '',

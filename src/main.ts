@@ -8,7 +8,7 @@ import { createDeviceRouter, attachWebSocketStreaming } from './api/device-api';
 import { CloudTunnel } from './tunnel/cloud-tunnel';
 import { ProviderRegistry } from './provider/provider-registry';
 import { DeviceCapabilityProbe } from './device/device-capability-probe';
-import { DeviceHealthSnapshot } from './common/health-model';
+import { DeviceHealthSnapshot } from 'katab-shared';
 import http from 'http';
 import os from 'os';
 import fs from 'fs';
@@ -94,6 +94,23 @@ async function main() {
     } catch (e: any) {
       console.warn(`KCP registration failed: ${e.message}`);
       console.warn('Continuing in standalone mode (Cloud-only).');
+    }
+  } else {
+    // H1: Validate existing token at startup — re-register if stale
+    try {
+      await cpClient.sendHeartbeat({ devices: [], activeSessions: 0 });
+      console.log('KCP token validated at startup.');
+    } catch (e: any) {
+      if (e.message?.includes('401') || e.message?.includes('Unauthorized')) {
+        console.warn('KCP token invalid — attempting re-registration...');
+        try {
+          await registerWithKcp();
+        } catch (regErr: any) {
+          console.warn(`Re-registration failed: ${regErr.message}. Continuing in standalone mode.`);
+        }
+      } else {
+        console.warn(`KCP unreachable at startup: ${e.message}. Will retry on heartbeat.`);
+      }
     }
   }
 
@@ -377,10 +394,10 @@ async function main() {
   // --- Cleanup Watchdog (runs every 60s) ---
   const cleanupWatchdog = async () => {
     try {
-      // 1) Clean old temp files (reports older than 24h)
+      // 1) Clean old reports (configurable retention, default 7 days)
       const reportDir = config.paths.reportDir;
       if (fs.existsSync(reportDir)) {
-        const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+        const cutoff = Date.now() - config.retention.reportDays * 24 * 60 * 60 * 1000;
         const entries = fs.readdirSync(reportDir);
         for (const entry of entries) {
           const fullPath = path.join(reportDir, entry);

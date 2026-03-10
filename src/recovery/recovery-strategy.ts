@@ -5,8 +5,7 @@
  * The RecoveryRunner tries each action in order until one succeeds.
  */
 
-import { FailureCode } from '../common/failure-taxonomy';
-import { RecoveryAction, RecoveryStrategy } from '../common/recovery-types';
+import { FailureCode, RecoveryAction, RecoveryStrategy } from 'katab-shared';
 
 const DEFAULT_STRATEGIES: RecoveryStrategy[] = [
   // iOS

@@ -6,7 +6,7 @@
  */
 
 import { Provider } from './provider.interface';
-import { ProviderType } from '../common/health-model';
+import { ProviderType } from 'katab-shared';
 import { WebBrowserProvider } from './web-browser.provider';
 import { IOSRealProvider } from './ios-real.provider';
 import { AndroidRealProvider } from './android-real.provider';

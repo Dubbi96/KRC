@@ -6,9 +6,7 @@
  * for a specific platform type.
  */
 
-import { FailureCode } from '../common/failure-taxonomy';
-import { HealthCheckResult, DeviceCapability, ProviderType } from '../common/health-model';
-import { RecoveryRecord, RecoveryAction } from '../common/recovery-types';
+import { FailureCode, HealthCheckResult, HealthCheckMode, DeviceCapability, ProviderType, RecoveryRecord, RecoveryAction } from 'katab-shared';
 
 export interface DetectedDevice {
   id: string;
@@ -35,8 +33,11 @@ export interface Provider {
   readonly type: ProviderType;
   readonly platform: 'ios' | 'android' | 'web';
 
-  /** Run a health check on the provider infrastructure */
-  healthCheck(device?: DetectedDevice): Promise<HealthCheckResult>;
+  /** Run a health check on the provider infrastructure.
+   *  - lightweight: connectivity only (heartbeat)
+   *  - medium: server status + device visibility (preflight)
+   *  - heavy: full capability probe (post-recovery) */
+  healthCheck(device?: DetectedDevice, mode?: HealthCheckMode): Promise<HealthCheckResult>;
 
   /** Probe device capabilities */
   probeCapabilities(device: DetectedDevice): Promise<DeviceCapability>;

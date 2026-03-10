@@ -6,14 +6,11 @@
  */
 
 import { Provider, DetectedDevice } from './provider.interface';
-import { FailureCode } from '../common/failure-taxonomy';
 import {
-  HealthCheckResult,
-  HealthStatus,
-  DeviceCapability,
-  ProviderType,
-} from '../common/health-model';
-import { RecoveryRecord, RecoveryAction } from '../common/recovery-types';
+  FailureCode,
+  HealthCheckResult, HealthCheckMode, HealthStatus, DeviceCapability, ProviderType,
+  RecoveryRecord, RecoveryAction,
+} from 'katab-shared';
 import { v4 as uuid } from 'uuid';
 import { execSync } from 'child_process';
 
@@ -27,10 +24,25 @@ export class IOSRealProvider implements Provider {
     this.appiumPort = appiumPort;
   }
 
-  async healthCheck(device?: DetectedDevice): Promise<HealthCheckResult> {
+  async healthCheck(device?: DetectedDevice, mode: HealthCheckMode = HealthCheckMode.MEDIUM): Promise<HealthCheckResult> {
     const details: Record<string, boolean> = {};
 
-    // Check Appium server
+    if (mode === HealthCheckMode.LIGHTWEIGHT) {
+      // Lightweight: quick Appium /status only (no xcrun, no device probe)
+      try {
+        const resp = await fetch(`http://127.0.0.1:${this.appiumPort}/status`, { signal: AbortSignal.timeout(3000) });
+        details.appiumReachable = resp.ok;
+      } catch {
+        details.appiumReachable = false;
+      }
+      return {
+        status: details.appiumReachable ? HealthStatus.HEALTHY : HealthStatus.UNHEALTHY,
+        details,
+        failureCode: details.appiumReachable ? undefined : FailureCode.APPIUM_NOT_RUNNING,
+      };
+    }
+
+    // Medium+: Check Appium server
     try {
       const resp = await fetch(`http://127.0.0.1:${this.appiumPort}/status`, { signal: AbortSignal.timeout(5000) });
       details.appiumReachable = resp.ok;
@@ -38,7 +50,7 @@ export class IOSRealProvider implements Provider {
       details.appiumReachable = false;
     }
 
-    // Check xcrun devicectl
+    // Medium+: Check xcrun devicectl
     try {
       execSync('xcrun devicectl list devices 2>/dev/null', { timeout: 10000, stdio: 'pipe' });
       details.xcrunAvailable = true;
@@ -46,13 +58,25 @@ export class IOSRealProvider implements Provider {
       details.xcrunAvailable = false;
     }
 
-    // Check specific device if provided
+    // Medium+: Check specific device if provided
     if (device?.udid) {
       try {
         const output = execSync(`xcrun devicectl list devices 2>/dev/null`, { timeout: 10000, stdio: 'pipe' }).toString();
         details.deviceVisible = output.includes(device.udid);
       } catch {
         details.deviceVisible = false;
+      }
+    }
+
+    if (mode === HealthCheckMode.HEAVY) {
+      // Heavy: also verify WDA port responsiveness for the device
+      if (device?.udid) {
+        try {
+          const resp = await fetch('http://127.0.0.1:8100/status', { signal: AbortSignal.timeout(3000) });
+          details.wdaReachable = resp.ok;
+        } catch {
+          details.wdaReachable = false;
+        }
       }
     }
 
