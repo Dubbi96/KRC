@@ -234,13 +234,20 @@ function scanAndroidDevices(): DetectedDevice[] {
         } catch {}
       }
 
+      // Map ADB state: 'device' → 'connected' (matches DetectedDevice interface)
+      const statusMap: Record<string, DetectedDevice['status']> = {
+        device: 'connected',
+        unauthorized: 'unauthorized',
+        offline: 'offline',
+      };
+
       devices.push({
         id: serial,
         platform: 'android',
         name: deviceMatch?.[1] || modelMatch?.[1] || serial,
         model: modelMatch?.[1] || 'Unknown',
         version,
-        status: state as DetectedDevice['status'],
+        status: statusMap[state] || 'offline',
       });
     }
   } catch {}
@@ -327,6 +334,13 @@ function scanAndroidEmulators(): DetectedDevice[] {
         } catch {}
       }
 
+      // Map ADB state: 'device' → 'connected' (matches DetectedDevice interface)
+      const statusMap: Record<string, DetectedDevice['status']> = {
+        device: 'connected',
+        unauthorized: 'unauthorized',
+        offline: 'offline',
+      };
+
       const name = avdName || deviceMatch?.[1] || modelMatch?.[1] || serial;
       devices.push({
         id: serial,
@@ -334,7 +348,7 @@ function scanAndroidEmulators(): DetectedDevice[] {
         name: `${name} (Emulator)`,
         model: modelMatch?.[1] || avdName || 'Emulator',
         version,
-        status: state as DetectedDevice['status'],
+        status: statusMap[state] || 'offline',
         isSimulator: true,
       });
     }
